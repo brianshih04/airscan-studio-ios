@@ -31,23 +31,81 @@ struct AirScanStudioApp: App {
 struct RootTabView: View {
     @State private var tab = 0
     @StateObject private var scanVM = ScanViewModel()
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+
+    fileprivate static let sidebarItems: [(label: String, icon: String)] = [
+        ("首頁", "house.fill"),
+        ("文件", "doc.fill"),
+        ("紀錄", "clock.arrow.circlepath"),
+        ("設定", "gearshape.fill")
+    ]
 
     var body: some View {
-        TabView(selection: $tab) {
-            HomeView(scanVM: scanVM)
-                .tabItem { Label("首頁", systemImage: "house.fill") }
-                .tag(0)
-            DocumentsView(scanVM: scanVM)
-                .tabItem { Label("文件", systemImage: "doc.fill") }
-                .tag(1)
-            HistoryView()
-                .tabItem { Label("紀錄", systemImage: "clock.arrow.circlepath") }
-                .tag(2)
-            SettingsView(scanVM: scanVM)
-                .tabItem { Label("設定", systemImage: "gearshape.fill") }
-                .tag(3)
+        if hSizeClass == .regular {
+            // iPad: sidebar navigation (mirrors Android NavigationRail at >=600dp)
+            NavigationSplitView {
+                List {
+                    ForEach(0..<4, id: \.self) { i in
+                        Button {
+                            tab = i
+                        } label: {
+                            HStack {
+                                Label(Self.sidebarItems[i].label, systemImage: Self.sidebarItems[i].icon)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .listRowBackground(tab == i ? Color.primaryAccent.opacity(0.15) : Color.clear)
+                        .foregroundColor(tab == i ? Color.primaryAccent : Color.primary)
+                    }
+                }
+                .listStyle(.sidebar)
+                .navigationTitle("AirScan Studio")
+            } detail: {
+                switch tab {
+                case 0: NavigationStack { HomeView(scanVM: scanVM) }
+                case 1: NavigationStack { DocumentsView(scanVM: scanVM) }
+                case 2: NavigationStack { HistoryView() }
+                default: NavigationStack { SettingsView(scanVM: scanVM) }
+                }
+            }
+            .tint(Color.primaryAccent)
+        } else {
+            TabView(selection: $tab) {
+                HomeView(scanVM: scanVM)
+                    .tabItem { Label("首頁", systemImage: "house.fill") }
+                    .tag(0)
+                DocumentsView(scanVM: scanVM)
+                    .tabItem { Label("文件", systemImage: "doc.fill") }
+                    .tag(1)
+                HistoryView()
+                    .tabItem { Label("紀錄", systemImage: "clock.arrow.circlepath") }
+                    .tag(2)
+                SettingsView(scanVM: scanVM)
+                    .tabItem { Label("設定", systemImage: "gearshape.fill") }
+                    .tag(3)
+            }
+            .tint(Color.primaryAccent)
         }
-        .tint(Color.primaryAccent)
+    }
+}
+
+/// Constrains content width on regular-width layouts and centers it.
+struct MaxWidthContainer<Content: View>: View {
+    var maxWidth: CGFloat = 720
+    @ViewBuilder var content: Content
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+
+    var body: some View {
+        if hSizeClass == .regular {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                content.frame(maxWidth: maxWidth, alignment: .center)
+                Spacer(minLength: 0)
+            }
+        } else {
+            content
+        }
     }
 }
 
@@ -59,18 +117,22 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    header
-                    heroCard
-                    HStack(spacing: 12) {
-                        printCard
-                        deviceCard
+                MaxWidthContainer {
+                    VStack(spacing: 16) {
+                        header
+                        heroCard
+                        HStack(spacing: 12) {
+                            printCard
+                            deviceCard
+                        }
+                        recentCard
                     }
-                    recentCard
+                    .padding(16)
                 }
-                .padding(16)
             }
             .background(Color(UIColor.systemGroupedBackground))
+            .navigationTitle("首頁")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 
@@ -243,6 +305,8 @@ struct ScanSettingsView: View {
                 scanButton
             }
             .padding(16)
+            .frame(maxWidth: 720)
+            .frame(maxWidth: .infinity)
         }
         .background(Color(UIColor.systemGroupedBackground))
         .navigationTitle("掃描")

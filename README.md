@@ -45,3 +45,27 @@ xcodebuild -scheme AirScanStudio \
 ## 授權
 
 TBD
+
+## GitHub 倉庫
+
+https://github.com/brianshih04/airscan-studio-ios
+
+### 推送
+
+本機尚未設定 GitHub 憑證（無 `gh` CLI、無 ssh key、鑰匙圈無 github.com 網路密碼）。
+首次推送需要認證，兩種方式擇一：
+
+```bash
+# 方式 A：GitHub CLI（推薦，會引導瀏覽器登入）
+brew install gh && gh auth login
+git remote add origin https://github.com/brianshih04/airscan-studio-ios.git
+git push -u origin main
+
+# 方式 B：SSH key
+ssh-keygen -t ed25519 -C "brian.shih04@gmail.com"
+# 把 ~/.ssh/id_ed25519.pub 加到 GitHub → Settings → SSH keys
+git remote add origin git@github.com:brianshih04/airscan-studio-ios.git
+git push -u origin main
+```
+
+注意：需先在 GitHub 上建立空倉庫 `airscan-studio-ios`（不要勾選初始化 README）。
