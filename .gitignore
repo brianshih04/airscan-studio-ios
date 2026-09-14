@@ -1,0 +1,18 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcuserdatad/
+AirScanStudio.xcodeproj/project.xcworkspace/xcuserdata/
+AirScanStudio.xcodeproj/xcuserdata/
+
+# XcodeGen - generated
+AirScanStudio.xcodeproj/
+
+# macOS
+.DS_Store
+
+# Logs / temp
+*.log
+build/dd/
