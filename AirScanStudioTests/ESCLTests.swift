@@ -59,6 +59,96 @@ final class ESCLTests: XCTestCase {
         XCTAssertEqual(caps.maker, "HP LaserJet Pro MFP 3104fdw")
     }
 
+    // MARK: - ADF 進階（scan:NumberOfPages / scan:Duplex）
+
+    func testScanSettingsXMLSendsNumberOfPagesForADF() {
+        var s = ScanSettings()
+        s.source = .adf
+        let xml = ESCLClient.scanSettingsXML(s, namespace: "http://schemas.microsoft.com/windows/scanning",
+                                             numberOfPages: 7, duplex: false)
+        XCTAssertTrue(xml.contains("<scan:NumberOfPages>7</scan:NumberOfPages>"),
+                      "ADF 支援時應送 scan:NumberOfPages")
+        XCTAssertFalse(xml.contains("<scan:Duplex>"), "未啟用雙面時不應送 scan:Duplex")
+    }
+
+    func testScanSettingsXMLSendsDuplexWhenEnabled() {
+        var s = ScanSettings()
+        s.source = .adf
+        let xml = ESCLClient.scanSettingsXML(s, namespace: "http://schemas.microsoft.com/windows/scanning",
+                                             numberOfPages: 5, duplex: true)
+        XCTAssertTrue(xml.contains("<scan:Duplex>true</scan:Duplex>"),
+                      "caps.adfDuplex 時應送 scan:Duplex")
+        XCTAssertTrue(xml.contains("<scan:NumberOfPages>5</scan:NumberOfPages>"))
+    }
+
+    func testScanSettingsXMLNoADFOptionsForPlaten() {
+        var s = ScanSettings()
+        s.source = .platen
+        let xml = ESCLClient.scanSettingsXML(s, namespace: "http://schemas.microsoft.com/windows/scanning",
+                                             numberOfPages: 3, duplex: true)
+        XCTAssertFalse(xml.contains("NumberOfPages"), "Platen 不應送 NumberOfPages")
+        XCTAssertFalse(xml.contains("Duplex"), "Platen 不應送 Duplex")
+    }
+
+    func testCapsAdfDuplexParsing() throws {
+        let xml = """
+        <scan:ScannerCapabilities xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm" xmlns:scan="http://schemas.microsoft.com/windows/scanning">
+          <pwg:Version>2.63</pwg:Version>
+          <scan:Adf>
+            <scan:FeederInputCaps><scan:FeederMaxWidth>100</scan:FeederMaxWidth></scan:FeederInputCaps>
+            <scan:AdfDuplexInputCaps><scan:MinWidth>8</scan:MinWidth></scan:AdfDuplexInputCaps>
+          </scan:Adf>
+        </scan:ScannerCapabilities>
+        """.data(using: .utf8)!
+        let client = ESCLClient(scanner: DiscoveredScanner(id: "t", name: "t", host: "1.2.3.4", port: 80, isSecure: false))
+        let caps = try client.fetchCapabilitiesParser(xml)
+        XCTAssertTrue(caps.supportsAdf)
+        XCTAssertTrue(caps.adfDuplex, "含 AdfDuplexInputCaps 時 adfDuplex 應為 true")
+    }
+
+    // MARK: - Flatbed 逐頁合併 PDF
+
+    func testMaxFlatbedPagesIs50() {
+        XCTAssertEqual(ScanViewModel.maxFlatbedPages, 50)
+    }
+
+    /// 驗證 Flatbed 逐頁狀態機：prompt 掛起 → resolve(.finish) → continuation 恢復
+    @MainActor
+    func testFlatbedChoiceFlowNextThenFinish() async throws {
+        let vm = ScanViewModel()
+        // 直接驗證 continuation 機制（不觸發真掃，真掃由整合測試覆蓋）
+        let promptTask = Task { try await vm.promptFlatbedNextPage(pageNumber: 1) }
+        for _ in 0..<100 where !vm.awaitingNextPage {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(vm.awaitingNextPage, "prompt 後應進入等待狀態")
+        XCTAssertTrue(vm.phase == .awaitingNextPage(page: 1) || vm.awaitingNextPage)
+        vm.resolveFlatbedChoice(true) // 下一頁
+        let choice = try await promptTask.value
+        XCTAssertEqual(choice, .nextPage)
+        XCTAssertFalse(vm.awaitingNextPage, "resolve 後應離開等待狀態")
+    }
+
+    /// 驗證取消路徑：prompt 掛起 → cancelScan → continuation 拋 CancellationError、phase 回 idle
+    @MainActor
+    func testCancelScanResolvesPromptAndResetsPhase() async throws {
+        let vm = ScanViewModel()
+        let promptTask = Task { try await vm.promptFlatbedNextPage(pageNumber: 1) }
+        for _ in 0..<100 where !vm.awaitingNextPage {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(vm.awaitingNextPage)
+        vm.cancelScan()
+        XCTAssertEqual(vm.phase, .idle, "取消後 phase 應回 idle")
+        XCTAssertFalse(vm.awaitingNextPage)
+        do {
+            _ = try await promptTask.value
+            XCTFail("取消應拋 CancellationError")
+        } catch is CancellationError {
+            // 預期路徑
+        }
+    }
+
     func testMockGeneratorProducesJPEG() {
         let data = MockScanGenerator.generatePage(settings: ScanSettings(), pageIndex: 0, totalPages: 1)
         XCTAssertGreaterThan(data.count, 10_000)

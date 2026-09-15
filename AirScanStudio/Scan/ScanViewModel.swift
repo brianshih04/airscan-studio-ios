@@ -16,6 +16,7 @@ final class ScanViewModel: ObservableObject {
         case idle
         case discovering
         case scanning(page: Int)
+        case awaitingNextPage(page: Int)
         case saving
         case done
         case failed(String)
@@ -30,6 +31,25 @@ final class ScanViewModel: ObservableObject {
     @Published var phase: Phase = .idle
     @Published var documents: [ScannedDocument] = []
     @Published var adfPageLimit = 5
+    @Published var duplexEnabled = false
+    /// Flatbed 逐頁模式上限
+    static let maxFlatbedPages = 50
+    /// Flatbed 逐頁模式：掃描完一頁後等待使用者選「下一頁」或「完成」
+    @Published var awaitingNextPage = false
+    /// 逐頁 prompt 開關（整合測試/自動化設 false：掃一頁直接完成）
+    var flatbedPromptEnabled = true
+    /// 目前逐頁累積的頁數（供 UI 顯示）
+    @Published var flatbedPageCount = 0
+    /// 進行中的掃描工作（供取消）
+    private var scanTask: Task<Void, Never>?
+    /// 真實掃描的底層工作（供 cancelScan 清理 eSCL job）
+    private var activeESCLClient: ESCLClient?
+    private var activeJobURL: URL?
+    private var flatbedContinuation: CheckedContinuation<FlatbedChoice, Error>?
+    var isScanning: Bool { scanTask != nil }
+
+    /// Flatbed 逐頁模式的使用者選擇
+    enum FlatbedChoice { case nextPage, finish }
     var discovered: [DiscoveredScanner] { browser.scanners }
     var isBrowsing: Bool { browser.isBrowsing }
     @Published var selectedScannerID: String?
@@ -84,7 +104,36 @@ final class ScanViewModel: ObservableObject {
 
     // MARK: - Scan
 
-    func startScan() async {
+    /// UI 進入點：儲存 scanTask 以支援取消。
+    func startScan() {
+        guard scanTask == nil else { return } // 防止重複啟動
+        scanTask = Task { [weak self] in
+            defer { Task { @MainActor in self?.scanTask = nil } }
+            await self?.performScan()
+        }
+    }
+
+    /// 取消目前掃描：讓 Task 收到 CancellationError，並清理 eSCL job。
+    func cancelScan() {
+        scanTask?.cancel()
+        scanTask = nil
+        phase = .idle
+        // 逐頁等待中的 continuation 需 resume（拋 CancellationError），避免流程懸掛
+        if let cont = flatbedContinuation {
+            flatbedContinuation = nil
+            awaitingNextPage = false
+            cont.resume(throwing: CancellationError())
+        }
+        // 清理掃描器端工作（背景執行，不阻塞 UI）
+        if let client = activeESCLClient, let jobURL = activeJobURL {
+            Task.detached { await client.cleanupJob(jobURL) }
+        }
+        activeESCLClient = nil
+        activeJobURL = nil
+        NSLog("[AirScan] scan canceled by user")
+    }
+
+    private func performScan() async {
         do {
             switch mode {
             case .mock:
@@ -92,18 +141,27 @@ final class ScanViewModel: ObservableObject {
             case .real:
                 try await runRealScan()
             }
+        } catch is CancellationError {
+            // 使用者取消：回到 idle，不顯示錯誤
+            phase = .idle
         } catch {
-            phase = .failed(error.localizedDescription)
+            if Task.isCancelled {
+                phase = .idle
+            } else {
+                phase = .failed(error.localizedDescription)
+            }
         }
     }
 
-    private func runMockScan() async {
+    private func runMockScan() async throws {
         let pages = settings.source == .adf ? adfPageLimit : 1
         for i in 0..<pages {
+            try Task.checkCancellation()
             phase = .scanning(page: i)
             // Simulate scanner latency
-            try? await Task.sleep(nanoseconds: 700_000_000)
+            try await Task.sleep(nanoseconds: 700_000_000)
         }
+        try Task.checkCancellation()
         phase = .saving
         let docsDir = Self.documentsDirectory()
         let id = UUID()
@@ -146,14 +204,25 @@ final class ScanViewModel: ObservableObject {
             throw AppError("找不到掃描器，請先在「裝置」頁探索並選擇掃描器")
         }
         let client = ESCLClient(scanner: scanner)
+        activeESCLClient = client
+        defer { activeESCLClient = nil }
         phase = .scanning(page: 0)
         let caps = try await client.fetchCapabilities()
-        let jobURL = try await client.createJob(settings, namespace: caps.scanNamespace)
+        // ADF 進階：送 scan:NumberOfPages（caps 支援時）與 scan:Duplex（caps.adfDuplex）
+        let sendPageLimit = settings.source == .adf && caps.supportsAdf
+        let sendDuplex = settings.source == .adf && caps.adfDuplex && duplexEnabled
+        let jobURL = try await client.createJob(
+            settings, namespace: caps.scanNamespace,
+            numberOfPages: sendPageLimit ? adfPageLimit : nil,
+            duplex: sendDuplex
+        )
+        activeJobURL = jobURL
         // Pull pages until the job ends or the ADF page limit is reached.
         // Brother serves NextDocument while Pending; HP serves after Completed.
         let maxPages = settings.source == .adf ? adfPageLimit : 1
         var pages: [Data] = []
         while pages.count < maxPages {
+            try Task.checkCancellation()
             phase = .scanning(page: pages.count)
             if let data = try await client.pullPage(jobURL: jobURL) {
                 pages.append(data)
@@ -163,9 +232,33 @@ final class ScanViewModel: ObservableObject {
                 break
             }
         }
+        activeJobURL = nil
         await client.cleanupJob(jobURL)
+        try Task.checkCancellation()
         guard !pages.isEmpty else {
             throw AppError("掃描器未回傳影像（可能超時或沒有文件）")
+        }
+
+        // ---- Flatbed 逐頁模式：掃描一頁後詢問「下一頁」或「完成 PDF」 ----
+        if settings.source == .platen {
+            var allPages = pages
+            while flatbedPromptEnabled && allPages.count < Self.maxFlatbedPages {
+                let choice = try await promptFlatbedNextPage(pageNumber: allPages.count)
+                if choice != .nextPage { break }
+                // 掃下一頁：建立新 job
+                try Task.checkCancellation()
+                phase = .scanning(page: allPages.count)
+                let nextJobURL = try await client.createJob(settings, namespace: caps.scanNamespace)
+                activeJobURL = nextJobURL
+                guard let data = try await client.pullPage(jobURL: nextJobURL) else {
+                    await client.cleanupJob(nextJobURL)
+                    break // 掃描器未回傳影像：以已累積頁數完成
+                }
+                allPages.append(data)
+                activeJobURL = nil
+                await client.cleanupJob(nextJobURL)
+            }
+            pages = allPages
         }
 
         phase = .saving
@@ -175,6 +268,7 @@ final class ScanViewModel: ObservableObject {
             url = Self.documentsDirectory().appendingPathComponent("scan_\(id.uuidString.prefix(8)).jpg")
             try pages[0].write(to: url)
         } else {
+            // 多頁（ADF 連掃或 Flatbed 逐頁累積）組成單一 PDF 存入文件庫
             url = Self.documentsDirectory().appendingPathComponent("scan_\(id.uuidString.prefix(8)).pdf")
             let pdf = PDFDocument()
             for (i, data) in pages.enumerated() {
@@ -184,6 +278,7 @@ final class ScanViewModel: ObservableObject {
             }
             try pdf.write(to: url)
         }
+        flatbedPageCount = 0
         let doc = ScannedDocument(
             name: "掃描 \(Self.dateFormatter.string(from: Date()))",
             fileURL: url,
@@ -193,6 +288,28 @@ final class ScanViewModel: ObservableObject {
         documents.insert(doc, at: 0)
         persistDocuments()
         phase = .done
+    }
+
+    // MARK: - Flatbed 逐頁合併 PDF
+
+    /// 掛起掃描流程，等待使用者從 UI 選擇「下一頁」或「完成 PDF」。
+    /// 取消時以 CancellationError resume。
+    func promptFlatbedNextPage(pageNumber: Int) async throws -> FlatbedChoice {
+        phase = .awaitingNextPage(page: pageNumber)
+        awaitingNextPage = true
+        flatbedPageCount = pageNumber
+        NSLog("[AirScan] flatbed: page \(pageNumber) done, awaiting user choice")
+        return try await withCheckedThrowingContinuation { cont in
+            flatbedContinuation = cont
+        }
+    }
+
+    /// 使用者選擇：下一頁（true）或完成 PDF（false）。
+    func resolveFlatbedChoice(_ next: Bool) {
+        guard let cont = flatbedContinuation else { return }
+        flatbedContinuation = nil
+        awaitingNextPage = false
+        cont.resume(returning: next ? .nextPage : .finish)
     }
 
     // MARK: - Testing support

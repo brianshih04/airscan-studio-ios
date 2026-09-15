@@ -8,8 +8,9 @@ final class ScanViewModelIntegrationTests: XCTestCase {
         let vm = await ScanViewModel()
         await MainActor.run {
             vm.mode = .real
+            vm.addManual(host: "10.1.121.175")  // Brother ADF（有紙）
+            print("DBG discovered:", vm.discovered.map { $0.id }, "selected:", vm.selectedScanner?.id ?? "nil")
         }
-        // pinned scanner comes from UserDefaults manualScannerHost (set by test runner)
         try await vm.startScanForTesting(source: .adf)
         let docs = await vm.documents
         let newest = try XCTUnwrap(docs.first, "掃描後應有文件")
@@ -32,6 +33,7 @@ final class ScanViewModelIntegrationTests: XCTestCase {
         let vm = await ScanViewModel()
         await MainActor.run {
             vm.mode = .real
+            vm.flatbedPromptEnabled = false  // 整合測試只掃單頁，跳過逐頁 prompt
             vm.settings.source = .platen
             vm.addManual(host: "10.1.121.175")  // Brother
         }
@@ -69,6 +71,7 @@ final class ScanViewModelIntegrationTests: XCTestCase {
         let vm = await ScanViewModel()
         await MainActor.run {
             vm.mode = .real
+            vm.flatbedPromptEnabled = false  // 整合測試只掃單頁，跳過逐頁 prompt
             vm.settings.source = .platen
             vm.settings.resolution = .dpi300
             vm.settings.colorMode = .rgb24
@@ -88,6 +91,7 @@ final class ScanViewModelIntegrationTests: XCTestCase {
         let vm = await ScanViewModel()
         await MainActor.run {
             vm.mode = .real
+            vm.flatbedPromptEnabled = false  // 整合測試只掃單頁，跳過逐頁 prompt
             vm.settings.source = .platen
             vm.settings.resolution = .dpi600
             vm.settings.colorMode = .rgb24
@@ -109,6 +113,7 @@ final class ScanViewModelIntegrationTests: XCTestCase {
         let vm = await ScanViewModel()
         await MainActor.run {
             vm.mode = .real
+            vm.flatbedPromptEnabled = false  // 整合測試只掃單頁，跳過逐頁 prompt
             vm.settings.source = .platen
             vm.addManual(host: "10.1.121.175")
         }
@@ -131,6 +136,7 @@ final class ScanViewModelIntegrationTests: XCTestCase {
         let vm = await ScanViewModel()
         await MainActor.run {
             vm.mode = .real
+            vm.flatbedPromptEnabled = false  // 整合測試只掃單頁，跳過逐頁 prompt
             vm.settings.source = .platen
             vm.addManual(host: "10.1.121.182:8080")
         }

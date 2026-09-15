@@ -53,8 +53,12 @@ struct ESCLClient {
     // MARK: - Scan flow
 
     /// POST ScanJobs with settings XML, returns job URL.
-    func createJob(_ settings: ScanSettings, namespace: String) async throws -> URL {
-        let xml = Self.scanSettingsXML(settings, namespace: namespace)
+    /// - numberOfPages: eSCL scan:NumberOfPages（ADF 支援時送出 adfPageLimit）
+    /// - duplex: eSCL scan:Duplex（caps.adfDuplex 時送出）
+    func createJob(_ settings: ScanSettings, namespace: String,
+                   numberOfPages: Int? = nil, duplex: Bool = false) async throws -> URL {
+        let xml = Self.scanSettingsXML(settings, namespace: namespace,
+                                       numberOfPages: numberOfPages, duplex: duplex)
         var req = URLRequest(url: try safeURL("/ScanJobs"))
         req.httpMethod = "POST"
         req.setValue("application/xml", forHTTPHeaderField: "Content-Type")
@@ -161,7 +165,8 @@ struct ESCLClient {
 
     // MARK: - XML generation (pwg + scan namespaces, mirrors Android EsclXmlBuilder)
 
-    static func scanSettingsXML(_ s: ScanSettings, namespace: String) -> String {
+    static func scanSettingsXML(_ s: ScanSettings, namespace: String,
+                                numberOfPages: Int? = nil, duplex: Bool = false) -> String {
         // 對齊 Android 版 (EsclProtocol.buildScanSettings)：
         // - 不送 top-level pwg:Width/Height（Brother 會依 caps max 钳制，忽略請求）
         // - 紙張尺寸用 pwg:ScanRegions 表達（pwg namespace 的 XOffset/YOffset）
@@ -188,6 +193,7 @@ struct ESCLClient {
           <scan:XResolution>\(s.resolution.rawValue)</scan:XResolution>
           <scan:YResolution>\(s.resolution.rawValue)</scan:YResolution>
           <scan:ColorMode>\(colorModeXML(s.colorMode))</scan:ColorMode>
+          \(adfSettingsXML(s, numberOfPages: numberOfPages, duplex: duplex))
         </scan:ScanSettings>
         """
     }
@@ -198,6 +204,19 @@ struct ESCLClient {
         case .grayscale8: return "Grayscale8"
         case .bw1: return "BlackPixel1"
         }
+    }
+
+    /// ADF 進階設定（僅 Feeder 來源）：掃描頁數上限與雙面。
+    private static func adfSettingsXML(_ s: ScanSettings, numberOfPages: Int?, duplex: Bool) -> String {
+        guard s.source == .adf else { return "" }
+        var lines: [String] = []
+        if let n = numberOfPages, n > 0 {
+            lines.append("          <scan:NumberOfPages>\(n)</scan:NumberOfPages>")
+        }
+        if duplex {
+            lines.append("          <scan:Duplex>true</scan:Duplex>")
+        }
+        return lines.joined(separator: "\n")
     }
 
     static func parseJobPhase(_ data: Data) -> ScanJobPhase? {

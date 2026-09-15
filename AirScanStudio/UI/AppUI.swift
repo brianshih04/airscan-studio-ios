@@ -315,6 +315,8 @@ struct ScanSettingsView: View {
                 if scanVM.settings.source == .adf {
                     Stepper("頁數上限: \(scanVM.adfPageLimit)", value: $scanVM.adfPageLimit, in: 1...50)
                         .font(.subheadline)
+                    Toggle("雙面掃描（需掃描器支援）", isOn: $scanVM.duplexEnabled)
+                        .font(.subheadline)
                 }
 
                 scanButton
@@ -389,29 +391,89 @@ struct ScanSettingsView: View {
     }
 
     private var scanButton: some View {
-        Button {
-            Task { await scanVM.startScan() }
-        } label: {
-            HStack {
-                if case .scanning(let p) = scanVM.phase {
-                    ProgressView().tint(.white)
-                    Text("掃描中... 第 \(p + 1) 頁")
-                } else {
-                    Image(systemName: "doc.viewfinder")
-                    Text("開始掃描")
+        Group {
+            if scanVM.awaitingNextPage {
+                // Flatbed 逐頁模式：掃描一頁完成後讓使用者選擇
+                VStack(spacing: 10) {
+                    Text("已掃描 \(scanVM.flatbedPageCount) 頁（上限 \(ScanViewModel.maxFlatbedPages) 頁）")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Button {
+                            scanVM.resolveFlatbedChoice(true)
+                        } label: {
+                            HStack {
+                                Image(systemName: "plus.viewfinder")
+                                Text("下一頁")
+                            }
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Capsule().fill(Color.heroTeal))
+                        }
+                        .accessibilityIdentifier("nextPageButton")
+                        Button {
+                            scanVM.resolveFlatbedChoice(false)
+                        } label: {
+                            HStack {
+                                Image(systemName: "checkmark.doc.fill")
+                                Text("完成 PDF")
+                            }
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Capsule().fill(Color.primaryAccent))
+                        }
+                        .accessibilityIdentifier("finishPDFButton")
+                    }
                 }
+            } else if isBusy {
+                // 掃描中：按鈕變「取消」
+                Button {
+                    scanVM.cancelScan()
+                } label: {
+                    HStack {
+                        if case .scanning(let p) = scanVM.phase {
+                            ProgressView().tint(.white)
+                            Text("取消掃描（第 \(p + 1) 頁）")
+                        } else if case .saving = scanVM.phase {
+                            ProgressView().tint(.white)
+                            Text("取消（儲存中…）")
+                        } else {
+                            Image(systemName: "xmark.circle.fill")
+                            Text("取消掃描")
+                        }
+                    }
+                    .font(.headline)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Capsule().fill(Color.red.opacity(0.85)))
+                }
+                .accessibilityIdentifier("cancelScanButton")
+            } else {
+                Button {
+                    scanVM.startScan()
+                } label: {
+                    HStack {
+                        Image(systemName: "doc.viewfinder")
+                        Text("開始掃描")
+                    }
+                    .font(.headline)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Capsule().fill(Color.primaryAccent))
+                }
+                .accessibilityIdentifier("startScanButton")
             }
-            .font(.headline)
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(Capsule().fill(Color.primaryAccent))
         }
-        .disabled(isBusy)
     }
 
     private var isBusy: Bool {
-        if case .scanning = scanVM.phase { return true }
+        if scanVM.isScanning { return true }
         if case .saving = scanVM.phase { return true }
         return false
     }
