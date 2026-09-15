@@ -2,7 +2,7 @@
 import XCTest
 
 final class RealScanUITests: XCTestCase {
-    func testRealScanAgainstHP() {
+    func testRealScanAgainstBrotherHardware() {
         let app = XCUIApplication()
         app.launch()
 
@@ -20,15 +20,15 @@ final class RealScanUITests: XCTestCase {
         app.tabBars.buttons["首頁"].tap()
         app.staticTexts["裝置"].firstMatch.tap()
 
-        let hostField = app.textFields["IP 位址，例如 10.1.121.182"]
+        let hostField = app.textFields.matching(NSPredicate(format: "label CONTAINS \"IP 位址\"")).firstMatch
         XCTAssertTrue(hostField.waitForExistence(timeout: 5))
         hostField.tap()
         hostField.typeText("10.1.121.175")
         app.buttons["加入"].tap()
 
         // Scanner row should appear and get selected
-        let row = app.staticTexts.containing(NSPredicate(format: "label CONTAINS '10.1.121.182'")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 5), "手動掃描器應出現在清單")
+        let row = app.staticTexts.containing(NSPredicate(format: "label CONTAINS '10.1.121.175'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "手動掃描器（10.1.121.175）應出現在清單")
 
         // Go scan: 首頁 -> 掃描文件 -> 開始掃描
         app.navigationBars.buttons.firstMatch.tap() // back

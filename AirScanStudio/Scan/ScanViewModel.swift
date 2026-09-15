@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import PDFKit
+import Combine
 
 /// Central scan orchestration: Mock or Real (eSCL) behind one flow.
 /// Mirrors Android ScanViewModel + DocumentRepository.
@@ -37,6 +38,7 @@ final class ScanViewModel: ObservableObject {
     }
 
     let browser = ScannerBrowser()
+    private var cancellables = Set<AnyCancellable>()
 
     init() {
         if let saved = UserDefaults.standard.string(forKey: "mode"),
@@ -45,6 +47,11 @@ final class ScanViewModel: ObservableObject {
         }
         loadSettings()
         loadDocuments()
+        // Forward browser changes so DevicesView updates on discovery
+        browser.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Discovery
@@ -60,9 +67,11 @@ final class ScanViewModel: ObservableObject {
     }
 
     func addManual(host: String) {
-        // Accept "ip" or "ip:port"
+        // Accept "ip" or "ip:port"; validate to avoid index-out-of-range
         let parts = host.split(separator: ":")
-        let ip = String(parts[0])
+        guard let first = parts.first, !first.isEmpty,
+              first.allSatisfy({ $0.isNumber || $0 == "." }) else { return }
+        let ip = String(first)
         let port = parts.count > 1 ? Int(parts[1]) ?? 80 : 80
         browser.addManualScanner(host: ip, port: port)
         selectedScannerID = "manual-\(ip):\(port)"
@@ -126,21 +135,45 @@ final class ScanViewModel: ObservableObject {
         phase = .scanning(page: 0)
         let caps = try await client.fetchCapabilities()
         let jobURL = try await client.createJob(settings, namespace: caps.scanNamespace)
-        // Brother-style pull: NextDocument may return 200 while job is still Pending.
-        // HP-style: page arrives after job Completed. Poll both in parallel until page or timeout.
-        guard let data = try await client.pullPage(jobURL: jobURL) else {
-            await client.cleanupJob(jobURL)
-            throw AppError("掃描器未回傳影像（可能超時或沒有文件）")
+        // Pull pages until the job ends or the ADF page limit is reached.
+        // Brother serves NextDocument while Pending; HP serves after Completed.
+        let maxPages = settings.source == .adf ? adfPageLimit : 1
+        var pages: [Data] = []
+        while pages.count < maxPages {
+            phase = .scanning(page: pages.count)
+            if let data = try await client.pullPage(jobURL: jobURL) {
+                pages.append(data)
+                // If source is platen, one page only
+                if settings.source == .platen { break }
+            } else {
+                break
+            }
         }
         await client.cleanupJob(jobURL)
+        guard !pages.isEmpty else {
+            throw AppError("掃描器未回傳影像（可能超時或沒有文件）")
+        }
 
         phase = .saving
-        let url = Self.documentsDirectory().appendingPathComponent("scan_\(UUID().uuidString.prefix(8)).jpg")
-        try data.write(to: url)
+        let id = UUID()
+        let url: URL
+        if pages.count == 1 {
+            url = Self.documentsDirectory().appendingPathComponent("scan_\(id.uuidString.prefix(8)).jpg")
+            try pages[0].write(to: url)
+        } else {
+            url = Self.documentsDirectory().appendingPathComponent("scan_\(id.uuidString.prefix(8)).pdf")
+            let pdf = PDFDocument()
+            for (i, data) in pages.enumerated() {
+                if let img = UIImage(data: data), let page = PDFPage(image: img) {
+                    pdf.insert(page, at: i)
+                }
+            }
+            try pdf.write(to: url)
+        }
         let doc = ScannedDocument(
             name: "掃描 \(Self.dateFormatter.string(from: Date()))",
             fileURL: url,
-            pageCount: 1,
+            pageCount: pages.count,
             settings: settings
         )
         documents.insert(doc, at: 0)

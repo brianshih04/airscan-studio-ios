@@ -47,19 +47,17 @@ final class ScannerBrowser: ObservableObject {
                 guard !box.value else { return }
                 if state == .ready {
                     box.value = true
-                    // remoteEndpoint gives host:port once resolved
                     var host = "0.0.0.0"
                     var port = 80
-                    if let remote = conn.currentPath?.remoteEndpoint {
-                        let desc = String(describing: remote)
-                        // Format is either "IPv4地址%iface:port" or "host:port"
-                        let parts = desc.split(separator: ":")
-                        if parts.count >= 2, let p = Int(parts.last ?? "") {
-                            port = p
-                            var h = parts[parts.count - 2].description
-                            if let pct = h.firstIndex(of: "%") { h = String(h[..<pct]) }
-                            host = h
+                    if let remote = conn.currentPath?.remoteEndpoint,
+                       case let .hostPort(h, p) = remote {
+                        switch h {
+                        case .ipv4(let v4): host = "\(v4)"
+                        case .ipv6(let v6): host = "\(v6)"
+                        case .name(let n, _): host = n
+                        @unknown default: host = "\(h)"
                         }
+                        port = Int(p.rawValue)
                     }
                     cont.resume(returning: (host, port))
                     conn.cancel()

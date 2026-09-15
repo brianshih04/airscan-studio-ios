@@ -61,7 +61,10 @@ struct ESCLClient {
         NSLog("[AirScan] Location header: \(location)")
         // Location may be absolute or relative
         if let abs = URL(string: location), abs.scheme != nil { return abs }
-        return URL(string: "\(baseURL)\(location)")!
+        guard let resolved = URL(string: location, relativeTo: URL(string: baseURL))?.absoluteURL else {
+            throw ESCLError.badResponse
+        }
+        return resolved
     }
 
     /// Poll job status until Completed/Aborted/Canceled.
@@ -96,7 +99,8 @@ struct ESCLClient {
             req.timeoutInterval = 30
             let (data, resp) = try await session.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            if code == 200, data.count > 1000 {
+            let mime = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? ""
+            if code == 200, mime.contains("image/") || mime.contains("application/pdf") {
                 NSLog("[AirScan] NextDocument 200 at poll \(poll), \(data.count) bytes")
                 return data
             }

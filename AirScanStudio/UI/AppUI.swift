@@ -605,7 +605,7 @@ struct DevicesView: View {
 
                 Section("手動加入（Bonjour 被擋時）") {
                     HStack {
-                        TextField("IP 位址，例如 10.1.121.182", text: $manualHost)
+                        TextField("IP 位址，例如 192.168.1.50:8080", text: $manualHost)
                             .keyboardType(.decimalPad)
                         Button("加入") {
                             scanVM.addManual(host: manualHost.trimmingCharacters(in: .whitespaces))

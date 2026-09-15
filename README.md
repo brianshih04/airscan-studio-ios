@@ -35,12 +35,14 @@ xcodebuild -scheme AirScanStudio \
   -derivedDataPath build/dd test CODE_SIGNING_ALLOWED=NO
 ```
 
-## 已知裝置測試狀態（承 Android 版實機報告）
+## 已知裝置測試狀態（iOS 版真機驗證 2026-09-15）
 
-| 裝置 | eSCL | 備註 |
+| 裝置 | eSCL 掃描 | 備註 |
 |---|---|---|
-| HP LaserJet Pro MFP 3104fdw | ✅ ADF/Flatbed | A4 300dpi 尺寸正確（2480×3508） |
-| Brother MFC-L2715DW | ⚠️ | Flatbed 回傳非 A4 比例低像素；ADF 不取紙（firmware 互通問題） |
+| HP LaserJet Pro MFP 3104fdw | ✅ ADF + Flatbed（App 端到端） | eSCL 在 `:8080`；ScanSettings 需 HP escl namespace；標準 A4 輸出 |
+| Brother MFC-L2715DW | ✅ Flatbed（App 端到端） | eSCL 在 `:80`；**無 Bonjour 廣告，需手動輸入 IP**；無 `scan:Intent` 會卡 Pending；回傳原生 2512×3290 |
+
+詳見[測試報告](docs/hp-brother-ios-test-report-2026-09-15.md)。
 
 ## 授權
 
@@ -50,22 +52,8 @@ TBD
 
 https://github.com/brianshih04/airscan-studio-ios
 
-### 推送
+## 文件
 
-本機尚未設定 GitHub 憑證（無 `gh` CLI、無 ssh key、鑰匙圈無 github.com 網路密碼）。
-首次推送需要認證，兩種方式擇一：
-
-```bash
-# 方式 A：GitHub CLI（推薦，會引導瀏覽器登入）
-brew install gh && gh auth login
-git remote add origin https://github.com/brianshih04/airscan-studio-ios.git
-git push -u origin main
-
-# 方式 B：SSH key
-ssh-keygen -t ed25519 -C "brian.shih04@gmail.com"
-# 把 ~/.ssh/id_ed25519.pub 加到 GitHub → Settings → SSH keys
-git remote add origin git@github.com:brianshih04/airscan-studio-ios.git
-git push -u origin main
-```
-
-注意：需先在 GitHub 上建立空倉庫 `airscan-studio-ios`（不要勾選初始化 README）。
+- [HP / Brother 真機測試報告（2026-09-15）](docs/hp-brother-ios-test-report-2026-09-15.md) —
+  兩台 MFP 的 eSCL 協定差異、App 端到端驗證結果、已知限制
+- 上游專案：[mopria-android-scan-print](https://github.com/brianshih04/mopria-android-scan-print)（Android 版，含 ADF 解析度調查與 OCR pipeline 文件）

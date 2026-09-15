@@ -6,8 +6,14 @@ final class AirScanFlowUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
+        // Ensure mock mode (app persists the last used mode)
+        app.tabBars.buttons["設定"].firstMatch.tap()
+        let mockSeg = app.buttons["模擬模式"].firstMatch
+        if mockSeg.waitForExistence(timeout: 4) { mockSeg.tap() }
+        app.tabBars.buttons["首頁"].firstMatch.tap()
+
         // Home -> tap hero card
-        app.staticTexts["掃描文件"].firstMatch.tap()
+        app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '掃描文件'")).firstMatch.tap()
 
         // Scan settings -> tap 開始掃描
         let scanButton = app.buttons["開始掃描"].firstMatch
