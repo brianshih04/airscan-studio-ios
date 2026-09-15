@@ -187,7 +187,8 @@ final class ScanViewModel: ObservableObject {
     // MARK: - Testing support
 
     /// Runs the real-scan pipeline and surfaces errors (for integration tests).
-    func startScanForTesting() async throws {
+    func startScanForTesting(source: ScanSource? = nil) async throws {
+        if let source { settings.source = source }
         try await runRealScan()
     }
 

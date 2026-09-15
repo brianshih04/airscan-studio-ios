@@ -69,7 +69,25 @@ Mac 與印表機同一區網（10.1.121.0/24）。App 版本 0.1.0 MVP（commit 
   （`10.1.121.182%en0`），造成 `URL(string:)` 回 nil → force-unwrap crash。
   修法：host 取值後 strip `%` 之後的 scope，並以 `badScannerURL` 錯誤取代 force-unwrap。
 
-## 6. 已知限制與後續
+## 6. Brother Platen 解析度/色彩矩陣（App 管線實測 2026-09-15）
+
+`ScanViewModelIntegrationTests.testBrotherResolutionColorMatrix`：6 組合全數通過。
+
+| dpi | 色彩 | 結果 | 輸出尺寸 | 檔案大小 |
+|---|---|---|---|---|
+| 200 | RGB24 | ✅ | 1680×2193 | 174KB |
+| 200 | Grayscale8 | ✅ | 1680×2197 | 179KB |
+| 300 | RGB24 | ✅ | 2512×3290 | 320KB |
+| 300 | Grayscale8 | ✅ | 2512×3294 | 349KB |
+| 600 | RGB24 | ✅ | 5072×6578 | 1.17MB |
+| 600 | Grayscale8 | ✅ | 5072×6582 | 1.41MB |
+
+注意：
+- Brother 需 10–15 秒 job 間隔（back-to-back POST 會 503/400）；測試與 App 已加重試。
+- 各 dpi 皆回原生感測範圍比例（非請求 A4），200dpi 1680×2193 與 Android 版報告數字一致。
+- App 的 `ScanResolution` enum 已補 100/200dpi（Brother 支援離散解析度）。
+
+## 7. 已知限制與後續
 
 1. 模擬器無法完成 AirPrint 印表機探索 → 實體出紙待真機驗證。
 2. Brother Flatbed 非 A4 比例為 firmware 行為（延續 Android 報告結論），App 不拉伸、

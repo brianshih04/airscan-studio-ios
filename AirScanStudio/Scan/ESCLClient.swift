@@ -199,9 +199,13 @@ struct ESCLClient {
         if xml.contains("schemas.hp.com/imaging/escl") {
             caps.scanNamespace = "http://schemas.hp.com/imaging/escl/2011/05/03"
         }
-        caps.supportsPlaten = xml.contains("<scan:Platen>") || xml.contains("PlatenInputCaps")
-        caps.supportsAdf = xml.contains("FeederInputCaps")
-        caps.adfDuplex = xml.contains("AdfDuplexInputCaps") && !xml.contains("<scan:AdfDuplexInputCaps/>")
+        // Prefix-agnostic: HP uses FeederInputCaps, Brother uses AdfSimplexInputCaps
+        func supports(_ needle: String) -> Bool {
+            xml.contains(needle)
+        }
+        caps.supportsPlaten = supports("PlatenInputCaps")
+        caps.supportsAdf = supports("FeederInputCaps") || supports("AdfSimplexInputCaps")
+        caps.adfDuplex = supports("AdfDuplexInputCaps") && !supports("<scan:AdfDuplexInputCaps/>")
         caps.model = caps.maker
         return caps
     }

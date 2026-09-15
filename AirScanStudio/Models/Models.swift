@@ -11,7 +11,9 @@ enum ScanSource: String, Codable, CaseIterable, Identifiable {
 }
 
 enum ScanResolution: Int, Codable, CaseIterable, Identifiable {
+    case dpi100 = 100
     case dpi150 = 150
+    case dpi200 = 200
     case dpi300 = 300
     case dpi600 = 600
 
