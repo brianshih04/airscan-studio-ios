@@ -122,12 +122,15 @@ final class ScanViewModel: ObservableObject {
     private func runRealScan() async throws {
         if selectedScanner == nil {
             // Auto-register pinned scanner + kick discovery before giving up
-            if let pinned = UserDefaults.standard.string(forKey: "manualScannerHost"), !pinned.isEmpty {
+            let pinned = UserDefaults.standard.string(forKey: "manualScannerHost") ?? ""
+            NSLog("[AirScan] runRealScan: no scanner selected; pinned='\(pinned)' discovered=\(browser.scanners.count)")
+            if !pinned.isEmpty {
                 addManual(host: pinned)
             }
             browser.start()
             try await Task.sleep(nanoseconds: 1_500_000_000)
         }
+        NSLog("[AirScan] runRealScan: will use \(selectedScanner.map { "\($0.host):\($0.port) secure=\($0.isSecure)" } ?? "nil")")
         guard let scanner = selectedScanner else {
             throw AppError("找不到掃描器，請先在「裝置」頁探索並選擇掃描器")
         }
@@ -179,6 +182,13 @@ final class ScanViewModel: ObservableObject {
         documents.insert(doc, at: 0)
         persistDocuments()
         phase = .done
+    }
+
+    // MARK: - Testing support
+
+    /// Runs the real-scan pipeline and surfaces errors (for integration tests).
+    func startScanForTesting() async throws {
+        try await runRealScan()
     }
 
     // MARK: - Persistence

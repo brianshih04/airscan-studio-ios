@@ -20,6 +20,13 @@ struct ESCLClient {
         return "\(scheme)://\(scanner.host):\(scanner.port)\(scanner.rootPath)"
     }
 
+    private func safeURL(_ path: String) throws -> URL {
+        guard let url = URL(string: baseURL + path), url.host != nil else {
+            throw ESCLError.badScannerURL(host: scanner.host, port: scanner.port)
+        }
+        return url
+    }
+
     // MARK: - Capabilities
 
     struct ScannerCapabilities {
@@ -34,7 +41,7 @@ struct ESCLClient {
     }
 
     func fetchCapabilities() async throws -> ScannerCapabilities {
-        let url = URL(string: "\(baseURL)/ScannerCapabilities")!
+        let url = try safeURL("/ScannerCapabilities")
         let (data, resp) = try await session.data(from: url)
         NSLog("[AirScan] caps HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1) from \(url)")
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
@@ -48,7 +55,7 @@ struct ESCLClient {
     /// POST ScanJobs with settings XML, returns job URL.
     func createJob(_ settings: ScanSettings, namespace: String) async throws -> URL {
         let xml = Self.scanSettingsXML(settings, namespace: namespace)
-        var req = URLRequest(url: URL(string: "\(baseURL)/ScanJobs")!)
+        var req = URLRequest(url: try safeURL("/ScanJobs"))
         req.httpMethod = "POST"
         req.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         req.httpBody = xml.data(using: .utf8)
@@ -211,9 +218,12 @@ enum ESCLError: LocalizedError {
     case badResponse
     case jobRejected(status: Int)
     case timeout
+    case badScannerURL(host: String, port: Int)
 
     var errorDescription: String? {
         switch self {
+        case .badScannerURL(let host, let port):
+            return "掃描器位址無效: \(host):\(port)"
         case .badResponse: return "掃描器回應異常"
         case .jobRejected(let status): return "掃描工作被拒絕 (HTTP \(status))"
         case .timeout: return "掃描工作逾時"

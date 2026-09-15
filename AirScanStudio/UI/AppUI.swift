@@ -177,6 +177,7 @@ struct HomeView: View {
             .frame(height: 200)
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("heroScanCard")
     }
 
     private var printCard: some View {

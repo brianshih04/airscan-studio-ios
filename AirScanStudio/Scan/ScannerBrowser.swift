@@ -52,8 +52,13 @@ final class ScannerBrowser: ObservableObject {
                     if let remote = conn.currentPath?.remoteEndpoint,
                        case let .hostPort(h, p) = remote {
                         switch h {
-                        case .ipv4(let v4): host = "\(v4)"
-                        case .ipv6(let v6): host = "\(v6)"
+                        case .ipv4(let v4):
+                            // description may include interface scope: "10.1.121.182%en0"
+                            let s = "\(v4)"
+                            host = s.contains("%") ? String(s[..<s.firstIndex(of: "%")!]) : s
+                        case .ipv6(let v6):
+                            let s = "\(v6)"
+                            host = s.contains("%") ? String(s[..<s.firstIndex(of: "%")!]) : s
                         case .name(let n, _): host = n
                         @unknown default: host = "\(h)"
                         }

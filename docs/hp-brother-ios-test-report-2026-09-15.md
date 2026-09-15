@@ -59,7 +59,17 @@ Mac 與印表機同一區網（10.1.121.0/24）。App 版本 0.1.0 MVP（commit 
 - `PrintUITests`：Mock 文件 → 列印 sheet 開啟與文件附加（模擬器限制下可行的最深驗證）。
 - `RealScanUITests`：**需要 10.1.121.175 真機在線**，預設 skip（`-skip-testing`），手動執行。
 
-## 5. 已知限制與後續
+## 5. 整合測試（直接呼叫 ScanViewModel，繞過 UI 點擊）
+
+`ScanViewModelIntegrationTests.testRealScanAgainstPinnedScanner`：
+以 `manualScannerHost` UserDefaults 指定掃描器，直接呼叫 `startScanForTesting()`。
+
+- Brother（10.1.121.175）：**通過（10 秒完成真實掃描，744KB JPEG，掃描內容為 Brother 測試校準頁）**
+- 過程中發現並修復一個真 bug：`NWEndpoint` 的 IPv4 description 帶 interface scope
+  （`10.1.121.182%en0`），造成 `URL(string:)` 回 nil → force-unwrap crash。
+  修法：host 取值後 strip `%` 之後的 scope，並以 `badScannerURL` 錯誤取代 force-unwrap。
+
+## 6. 已知限制與後續
 
 1. 模擬器無法完成 AirPrint 印表機探索 → 實體出紙待真機驗證。
 2. Brother Flatbed 非 A4 比例為 firmware 行為（延續 Android 報告結論），App 不拉伸、
