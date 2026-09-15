@@ -36,17 +36,62 @@ enum ScanColorMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+
+enum PaperSize: String, CaseIterable, Identifiable, Codable {
+    case a4
+    case a5
+    case letter
+    case photo4x6
+    case photo5x7
+    case auto
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .a4: return "A4"
+        case .a5: return "A5"
+        case .letter: return "Letter"
+        case .photo4x6: return "4×6"
+        case .photo5x7: return "5×7"
+        case .auto: return "自動"
+        }
+    }
+
+    var widthHundredthsOfInch: Int? {
+        switch self {
+        case .a4: return 2480
+        case .a5: return 1748
+        case .letter: return 2550
+        case .photo4x6: return 1200
+        case .photo5x7: return 1500
+        case .auto: return nil
+        }
+    }
+
+    var heightHundredthsOfInch: Int? {
+        switch self {
+        case .a4: return 3508
+        case .a5: return 2480
+        case .letter: return 3300
+        case .photo4x6: return 1800
+        case .photo5x7: return 2100
+        case .auto: return nil
+        }
+    }
+}
+
 struct ScanSettings: Equatable, Codable {
     var source: ScanSource = .platen
     var resolution: ScanResolution = .dpi300
     var colorMode: ScanColorMode = .rgb24
-    /// eSCL Width/Height 單位是 1/300 inch（與 dpi 無關！）：A4 = 2480×3508
-    /// dpi 只放在 XResolution/YResolution。之前隨 dpi 放大導致超過 caps Max 被钳制。
+    var paperSize: PaperSize = .a4
+    /// eSCL Width/Height 單位是 1/300 inch（與 dpi 無關）。依紙張尺寸；Auto = A4 滿版。
     var widthPx: Int {
-        Int(((210.0 / 25.4) * 300.0).rounded())
+        paperSize.widthHundredthsOfInch ?? 2480
     }
     var heightPx: Int {
-        Int(((297.0 / 25.4) * 300.0).rounded())
+        paperSize.heightHundredthsOfInch ?? 3508
     }
 }
 

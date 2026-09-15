@@ -101,4 +101,50 @@ final class ScanViewModelIntegrationTests: XCTestCase {
         print("BROTHER600: ok")
     }
 
+
+
+    func testPaperSizeMatrixBrother() async throws {
+        // 需 Brother 10.1.121.175 玻璃板有文件
+        let sizes: [PaperSize] = [.a5, .photo4x6, .photo5x7]
+        let vm = await ScanViewModel()
+        await MainActor.run {
+            vm.mode = .real
+            vm.settings.source = .platen
+            vm.addManual(host: "10.1.121.175")
+        }
+        for size in sizes {
+            await MainActor.run {
+                vm.settings.paperSize = size
+            }
+            try await vm.startScanForTesting()
+            let docs = await vm.documents
+            let newest = try XCTUnwrap(docs.first)
+            let url = await newest.fileURL
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(size) 應產出檔案")
+            print("PAPER \(size.rawValue): ok")
+        }
+    }
+
+    func testPaperSizeMatrixHP() async throws {
+        // 需 HP 10.1.121.182 玻璃板有文件
+        let sizes: [PaperSize] = [.a5, .photo4x6, .photo5x7]
+        let vm = await ScanViewModel()
+        await MainActor.run {
+            vm.mode = .real
+            vm.settings.source = .platen
+            vm.addManual(host: "10.1.121.182:8080")
+        }
+        for size in sizes {
+            await MainActor.run {
+                vm.settings.paperSize = size
+            }
+            try await vm.startScanForTesting()
+            let docs = await vm.documents
+            let newest = try XCTUnwrap(docs.first)
+            let url = await newest.fileURL
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(size) 應產出檔案")
+            print("PAPER \(size.rawValue): ok")
+        }
+    }
+
 }

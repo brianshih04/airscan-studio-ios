@@ -168,7 +168,7 @@ struct HomeView: View {
                         .background(Circle().fill(.white.opacity(0.15)))
                     Spacer()
                     Text("掃描文件").font(.title.bold()).foregroundColor(.white)
-                    Text("\(scanVM.settings.source == .adf ? "ADF" : "Flatbed") · \(scanVM.settings.resolution.displayName) · \(scanVM.settings.colorMode.displayName)")
+                    Text("\(scanVM.settings.source == .adf ? "ADF" : "Flatbed") · \(scanVM.settings.paperSize.displayName) · \(scanVM.settings.resolution.displayName) · \(scanVM.settings.colorMode.displayName)")
                         .foregroundColor(.white.opacity(0.85))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -274,6 +274,19 @@ struct ScanSettingsView: View {
                     VStack(spacing: 10) {
                         sourceRadio(ScanSource.platen)
                         sourceRadio(ScanSource.adf)
+                    }
+                }
+
+                Group {
+                    Text("紙張尺寸").font(.subheadline.bold())
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(PaperSize.allCases) { p in
+                                chip(selected: scanVM.settings.paperSize == p) {
+                                    scanVM.settings.paperSize = p
+                                } label: { Text(p.displayName) }
+                            }
+                        }
                     }
                 }
 
