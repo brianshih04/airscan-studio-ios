@@ -32,6 +32,8 @@ targets:
           - _uscans._tcp
           - _ipp._tcp
           - _ipps._tcp
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"

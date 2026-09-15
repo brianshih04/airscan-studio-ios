@@ -29,11 +29,14 @@ struct ESCLClient {
         var supportsPlaten = true
         var supportsAdf = false
         var adfDuplex = false
+        /// Namespace from caps root — reuse in ScanSettings (HP: schemas.hp.com/imaging/escl)
+        var scanNamespace = "http://schemas.microsoft.com/windows/scanning"
     }
 
     func fetchCapabilities() async throws -> ScannerCapabilities {
         let url = URL(string: "\(baseURL)/ScannerCapabilities")!
         let (data, resp) = try await session.data(from: url)
+        NSLog("[AirScan] caps HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1) from \(url)")
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
             throw ESCLError.badResponse
         }
@@ -43,17 +46,19 @@ struct ESCLClient {
     // MARK: - Scan flow
 
     /// POST ScanJobs with settings XML, returns job URL.
-    func createJob(_ settings: ScanSettings) async throws -> URL {
-        let xml = Self.scanSettingsXML(settings)
+    func createJob(_ settings: ScanSettings, namespace: String) async throws -> URL {
+        let xml = Self.scanSettingsXML(settings, namespace: namespace)
         var req = URLRequest(url: URL(string: "\(baseURL)/ScanJobs")!)
         req.httpMethod = "POST"
         req.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         req.httpBody = xml.data(using: .utf8)
         let (_, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw ESCLError.badResponse }
+        NSLog("[AirScan] POST ScanJobs -> HTTP \(http.statusCode)")
         guard http.statusCode == 201, let location = http.value(forHTTPHeaderField: "Location") else {
             throw ESCLError.jobRejected(status: http.statusCode)
         }
+        NSLog("[AirScan] Location header: \(location)")
         // Location may be absolute or relative
         if let abs = URL(string: location), abs.scheme != nil { return abs }
         return URL(string: "\(baseURL)\(location)")!
@@ -61,15 +66,18 @@ struct ESCLClient {
 
     /// Poll job status until Completed/Aborted/Canceled.
     func waitForJob(_ jobURL: URL) async throws -> ScanJobPhase {
-        for _ in 0..<300 { // ~5 min max
+        for poll in 0..<300 { // ~5 min max
             var req = URLRequest(url: jobURL)
             req.httpMethod = "GET"
             let (data, resp) = try await session.data(for: req)
             guard let http = resp as? HTTPURLResponse else { throw ESCLError.badResponse }
             if http.statusCode == 200, let phase = Self.parseJobPhase(data) {
+                if poll % 5 == 0 { NSLog("[AirScan] poll \(poll): \(phase.rawValue)") }
                 if phase != .processing && phase != .idle {
                     return phase
                 }
+            } else {
+                NSLog("[AirScan] poll \(poll): HTTP \(http.statusCode)")
             }
             try await Task.sleep(nanoseconds: 500_000_000)
         }
@@ -80,6 +88,7 @@ struct ESCLClient {
     func downloadPage(jobURL: URL) async throws -> Data {
         let next = jobURL.appendingPathComponent("NextDocument")
         let (data, resp) = try await session.data(from: next)
+        NSLog("[AirScan] NextDocument HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1), \(data.count) bytes")
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
             throw ESCLError.badResponse
         }
@@ -95,11 +104,11 @@ struct ESCLClient {
 
     // MARK: - XML generation (pwg + scan namespaces, mirrors Android EsclXmlBuilder)
 
-    static func scanSettingsXML(_ s: ScanSettings) -> String {
+    static func scanSettingsXML(_ s: ScanSettings, namespace: String) -> String {
         """
         <?xml version="1.0" encoding="UTF-8"?>
         <scan:ScanSettings xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm"
-                           xmlns:scan="http://schemas.microsoft.com/windows/scanning">
+                           xmlns:scan="\(namespace)">
           <pwg:Version>2.63</pwg:Version>
           <scan:InputSource>\(s.source == .platen ? "Platen" : "Feeder")</scan:InputSource>
           <scan:XResolution>\(s.resolution.rawValue)</scan:XResolution>
@@ -141,6 +150,9 @@ struct ESCLClient {
         guard let xml = String(data: data, encoding: .utf8) else { return caps }
         caps.maker = Self.extract(xml, tag: "pwg:MakerAndModel") ?? ""
         caps.version = Self.extract(xml, tag: "pwg:Version") ?? "2.0"
+        if xml.contains("schemas.hp.com/imaging/escl") {
+            caps.scanNamespace = "http://schemas.hp.com/imaging/escl/2011/05/03"
+        }
         caps.supportsPlaten = xml.contains("<scan:Platen>") || xml.contains("PlatenInputCaps")
         caps.supportsAdf = xml.contains("FeederInputCaps")
         caps.adfDuplex = xml.contains("AdfDuplexInputCaps") && !xml.contains("<scan:AdfDuplexInputCaps/>")

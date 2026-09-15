@@ -259,6 +259,7 @@ struct HomeView: View {
 
 struct ScanSettingsView: View {
     @ObservedObject var scanVM: ScanViewModel
+    @State private var showError = false
 
     var body: some View {
         ScrollView {
@@ -311,6 +312,14 @@ struct ScanSettingsView: View {
         .background(Color(UIColor.systemGroupedBackground))
         .navigationTitle("掃描")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("掃描失敗", isPresented: $showError) {
+            Button("好", role: .cancel) {}
+        } message: {
+            if case .failed(let msg) = scanVM.phase { Text(msg) }
+        }
+        .onChange(of: scanVM.phase) { ph in
+            if case .failed = ph { showError = true }
+        }
     }
 
     private var summaryCard: some View {
@@ -552,31 +561,65 @@ struct PrintView: View {
 
 struct DevicesView: View {
     @ObservedObject var scanVM: ScanViewModel
+    @State private var manualHost = ""
 
     var body: some View {
         List {
-            Section {
-                if scanVM.mode == .mock {
+            if scanVM.mode == .mock {
+                Section {
                     ContentUnavailableView("模擬模式", systemImage: "wand.and.stars",
                                            description: Text("切換至真實模式以探索網路掃描器"))
-                } else {
-                    ForEach(scanVM.browser.scanners) { s in
-                        VStack(alignment: .leading) {
-                            Text(s.name)
-                            Text("\(s.isSecure ? "uscanS(TLS)" : "uscan") · \(s.rootPath)")
+                }
+            } else {
+                Section {
+                    if scanVM.discovered.isEmpty {
+                        HStack {
+                            ProgressView()
+                            Text(scanVM.isBrowsing ? "探索中… (_uscan/_uscans)" : "尚未探索")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                    ForEach(scanVM.discovered) { s in
+                        Button {
+                            scanVM.selectedScannerID = s.id
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(s.name).font(.subheadline.weight(.medium))
+                                    Text("\(s.host):\(s.port) · \(s.isSecure ? "TLS" : "HTTP")")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if scanVM.selectedScanner?.id == s.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(Color.primaryAccent)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("eSCL 掃描器")
+                } footer: {
+                    Text("首次使用需允許「區域網路」權限（設定 → 隱私權與安全性 → 區域網路）。")
                 }
-            } header: {
-                Text("eSCL 掃描器 (_uscan/_uscans)")
+
+                Section("手動加入（Bonjour 被擋時）") {
+                    HStack {
+                        TextField("IP 位址，例如 10.1.121.182", text: $manualHost)
+                            .keyboardType(.decimalPad)
+                        Button("加入") {
+                            scanVM.addManual(host: manualHost.trimmingCharacters(in: .whitespaces))
+                            manualHost = ""
+                        }
+                        .disabled(manualHost.isEmpty)
+                    }
+                }
             }
         }
         .navigationTitle("裝置")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { scanVM.startDiscovery() }
     }
-
 }
 
 // MARK: - History

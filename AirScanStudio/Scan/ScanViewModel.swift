@@ -29,6 +29,12 @@ final class ScanViewModel: ObservableObject {
     @Published var phase: Phase = .idle
     @Published var documents: [ScannedDocument] = []
     @Published var adfPageLimit = 5
+    var discovered: [DiscoveredScanner] { browser.scanners }
+    var isBrowsing: Bool { browser.isBrowsing }
+    @Published var selectedScannerID: String?
+    var selectedScanner: DiscoveredScanner? {
+        discovered.first(where: { $0.id == selectedScannerID }) ?? discovered.first
+    }
 
     let browser = ScannerBrowser()
 
@@ -47,6 +53,15 @@ final class ScanViewModel: ObservableObject {
         guard mode == .real else { return }
         phase = .discovering
         browser.start()
+    }
+
+    func addManual(host: String) {
+        // Accept "ip" or "ip:port"
+        let parts = host.split(separator: ":")
+        let ip = String(parts[0])
+        let port = parts.count > 1 ? Int(parts[1]) ?? 80 : 80
+        browser.addManualScanner(host: ip, port: port)
+        selectedScannerID = "manual-\(ip):\(port)"
     }
 
     // MARK: - Scan
@@ -92,12 +107,13 @@ final class ScanViewModel: ObservableObject {
     }
 
     private func runRealScan() async throws {
-        guard let scanner = browser.scanners.first else {
-            throw AppError("找不到掃描器，請確認裝置已開機並在同一網路")
+        guard let scanner = selectedScanner else {
+            throw AppError("找不到掃描器，請先在「裝置」頁探索並選擇掃描器")
         }
         let client = ESCLClient(scanner: scanner)
         phase = .scanning(page: 0)
-        let jobURL = try await client.createJob(settings)
+        let caps = try await client.fetchCapabilities()
+        let jobURL = try await client.createJob(settings, namespace: caps.scanNamespace)
         let finalPhase = try await client.waitForJob(jobURL)
         guard finalPhase == .completed else {
             await client.cleanupJob(jobURL)

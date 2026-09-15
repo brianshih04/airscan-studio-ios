@@ -7,7 +7,7 @@ final class ESCLTests: XCTestCase {
         s.source = .adf
         s.resolution = .dpi300
         s.colorMode = .rgb24
-        let xml = ESCLClient.scanSettingsXML(s)
+        let xml = ESCLClient.scanSettingsXML(s, namespace: "http://schemas.microsoft.com/windows/scanning")
         XCTAssertTrue(xml.contains("<scan:InputSource>Feeder</scan:InputSource>"))
         XCTAssertTrue(xml.contains("<scan:XResolution>300</scan:XResolution>"))
         XCTAssertTrue(xml.contains("<scan:ColorMode>RGB24</scan:ColorMode>"))
