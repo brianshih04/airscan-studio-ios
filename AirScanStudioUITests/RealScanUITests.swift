@@ -23,7 +23,7 @@ final class RealScanUITests: XCTestCase {
         let hostField = app.textFields["IP 位址，例如 10.1.121.182"]
         XCTAssertTrue(hostField.waitForExistence(timeout: 5))
         hostField.tap()
-        hostField.typeText("10.1.121.182:8080")
+        hostField.typeText("10.1.121.175")
         app.buttons["加入"].tap()
 
         // Scanner row should appear and get selected

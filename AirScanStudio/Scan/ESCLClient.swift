@@ -84,6 +84,40 @@ struct ESCLClient {
         throw ESCLError.timeout
     }
 
+    /// Unified page pull (Brother & HP compatible):
+    /// - Brother: NextDocument returns 200 immediately while job is Pending.
+    /// - HP: NextDocument returns data after job Completed.
+    /// Returns nil on timeout/cancel; throws on hard errors.
+    func pullPage(jobURL: URL) async throws -> Data? {
+        let next = jobURL.appendingPathComponent("NextDocument")
+        for poll in 0..<120 { // ~2 min ceiling
+            // 1) try the document first (Brother serves while Pending)
+            var req = URLRequest(url: next)
+            req.timeoutInterval = 30
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            if code == 200, data.count > 1000 {
+                NSLog("[AirScan] NextDocument 200 at poll \(poll), \(data.count) bytes")
+                return data
+            }
+            // 2) check job state (HP flips to Completed; Brother flips to Canceled on timeout)
+            var sreq = URLRequest(url: jobURL)
+            sreq.timeoutInterval = 15
+            if let (sdata, sresp) = try? await session.data(for: sreq),
+               (sresp as? HTTPURLResponse)?.statusCode == 200,
+               let phase = Self.parseJobPhase(sdata) {
+                if poll % 10 == 0 { NSLog("[AirScan] pull poll \(poll): doc=\(code) job=\(phase.rawValue)") }
+                if phase == .aborted || phase == .canceled {
+                    NSLog("[AirScan] job ended: \(phase.rawValue)")
+                    return nil
+                }
+            }
+            try await Task.sleep(nanoseconds: 800_000_000)
+        }
+        NSLog("[AirScan] pullPage timeout")
+        return nil
+    }
+
     /// GET the scanned page (NextDocument).
     func downloadPage(jobURL: URL) async throws -> Data {
         let next = jobURL.appendingPathComponent("NextDocument")
@@ -113,6 +147,7 @@ struct ESCLClient {
           <scan:InputSource>\(s.source == .platen ? "Platen" : "Feeder")</scan:InputSource>
           <scan:XResolution>\(s.resolution.rawValue)</scan:XResolution>
           <scan:YResolution>\(s.resolution.rawValue)</scan:YResolution>
+          <scan:Intent>Document</scan:Intent>
           <scan:ColorMode>\(colorModeXML(s.colorMode))</scan:ColorMode>
           <pwg:Width>\(s.widthPx)</pwg:Width>
           <pwg:Height>\(s.heightPx)</pwg:Height>

@@ -53,6 +53,10 @@ final class ScanViewModel: ObservableObject {
         guard mode == .real else { return }
         phase = .discovering
         browser.start()
+        // Auto-register a manually pinned scanner (set via UserDefaults for test automation)
+        if let pinned = UserDefaults.standard.string(forKey: "manualScannerHost"), !pinned.isEmpty {
+            addManual(host: pinned)
+        }
     }
 
     func addManual(host: String) {
@@ -107,6 +111,14 @@ final class ScanViewModel: ObservableObject {
     }
 
     private func runRealScan() async throws {
+        if selectedScanner == nil {
+            // Auto-register pinned scanner + kick discovery before giving up
+            if let pinned = UserDefaults.standard.string(forKey: "manualScannerHost"), !pinned.isEmpty {
+                addManual(host: pinned)
+            }
+            browser.start()
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+        }
         guard let scanner = selectedScanner else {
             throw AppError("找不到掃描器，請先在「裝置」頁探索並選擇掃描器")
         }
@@ -114,12 +126,12 @@ final class ScanViewModel: ObservableObject {
         phase = .scanning(page: 0)
         let caps = try await client.fetchCapabilities()
         let jobURL = try await client.createJob(settings, namespace: caps.scanNamespace)
-        let finalPhase = try await client.waitForJob(jobURL)
-        guard finalPhase == .completed else {
+        // Brother-style pull: NextDocument may return 200 while job is still Pending.
+        // HP-style: page arrives after job Completed. Poll both in parallel until page or timeout.
+        guard let data = try await client.pullPage(jobURL: jobURL) else {
             await client.cleanupJob(jobURL)
-            throw AppError("掃描工作 \(finalPhase.rawValue)")
+            throw AppError("掃描器未回傳影像（可能超時或沒有文件）")
         }
-        let data = try await client.downloadPage(jobURL: jobURL)
         await client.cleanupJob(jobURL)
 
         phase = .saving
