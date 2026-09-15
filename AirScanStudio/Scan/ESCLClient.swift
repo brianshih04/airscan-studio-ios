@@ -162,19 +162,32 @@ struct ESCLClient {
     // MARK: - XML generation (pwg + scan namespaces, mirrors Android EsclXmlBuilder)
 
     static func scanSettingsXML(_ s: ScanSettings, namespace: String) -> String {
-        """
+        // 對齊 Android 版 (EsclProtocol.buildScanSettings)：
+        // - 不送 top-level pwg:Width/Height（Brother 會依 caps max 钳制，忽略請求）
+        // - 紙張尺寸用 pwg:ScanRegions 表達（pwg namespace 的 XOffset/YOffset）
+        let region = """
+              <pwg:ScanRegions>
+                <pwg:ScanRegion>
+                  <pwg:ContentRegionUnits>escl:ThreeHundredthsOfInches</pwg:ContentRegionUnits>
+                  <pwg:Height>\(s.heightPx)</pwg:Height>
+                  <pwg:Width>\(s.widthPx)</pwg:Width>
+                  <pwg:XOffset>0</pwg:XOffset>
+                  <pwg:YOffset>0</pwg:YOffset>
+                </pwg:ScanRegion>
+              </pwg:ScanRegions>
+            """
+        return """
         <?xml version="1.0" encoding="UTF-8"?>
         <scan:ScanSettings xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm"
                            xmlns:scan="\(namespace)">
           <pwg:Version>2.63</pwg:Version>
-          <scan:InputSource>\(s.source == .platen ? "Platen" : "Feeder")</scan:InputSource>
+          <scan:Intent>Document</scan:Intent>
+          \(region)
+          <scan:DocumentFormatExt class="scan:DocumentFormatExtType">image/jpeg</scan:DocumentFormatExt>
+          <pwg:InputSource>\(s.source == .platen ? "Platen" : "Feeder")</pwg:InputSource>
           <scan:XResolution>\(s.resolution.rawValue)</scan:XResolution>
           <scan:YResolution>\(s.resolution.rawValue)</scan:YResolution>
-          <scan:Intent>Document</scan:Intent>
           <scan:ColorMode>\(colorModeXML(s.colorMode))</scan:ColorMode>
-          <pwg:Width>\(s.widthPx)</pwg:Width>
-          <pwg:Height>\(s.heightPx)</pwg:Height>
-          <scan:DocumentFormatExt class="scan:DocumentFormatExtType">image/jpeg</scan:DocumentFormatExt>
         </scan:ScanSettings>
         """
     }

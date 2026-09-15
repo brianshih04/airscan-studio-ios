@@ -8,11 +8,14 @@ final class ESCLTests: XCTestCase {
         s.resolution = .dpi300
         s.colorMode = .rgb24
         let xml = ESCLClient.scanSettingsXML(s, namespace: "http://schemas.microsoft.com/windows/scanning")
-        XCTAssertTrue(xml.contains("<scan:InputSource>Feeder</scan:InputSource>"))
+        XCTAssertTrue(xml.contains("<pwg:InputSource>Feeder</pwg:InputSource>"))
         XCTAssertTrue(xml.contains("<scan:XResolution>300</scan:XResolution>"))
         XCTAssertTrue(xml.contains("<scan:ColorMode>RGB24</scan:ColorMode>"))
+        // 尺寸以 ScanRegions 表達（Android 版對齊），不在 top-level
         XCTAssertTrue(xml.contains("<pwg:Width>2480</pwg:Width>"))
         XCTAssertTrue(xml.contains("<pwg:Height>3508</pwg:Height>"))
+        XCTAssertTrue(xml.contains("<pwg:XOffset>0</pwg:XOffset>"))
+        XCTAssertFalse(xml.contains("<pwg:Width>2480</pwg:Width>\n          <pwg:Height>"))
     }
 
     func testA4PixelDimensions() {
