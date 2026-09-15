@@ -40,13 +40,13 @@ struct ScanSettings: Equatable, Codable {
     var source: ScanSource = .platen
     var resolution: ScanResolution = .dpi300
     var colorMode: ScanColorMode = .rgb24
-    /// A4 width in pixels at requested dpi (210mm), rounded to even (matches HP 2480@300)
+    /// eSCL Width/Height 單位是 1/300 inch（與 dpi 無關！）：A4 = 2480×3508
+    /// dpi 只放在 XResolution/YResolution。之前隨 dpi 放大導致超過 caps Max 被钳制。
     var widthPx: Int {
-        Int(((210.0 / 25.4) * Double(resolution.rawValue)).rounded())
+        Int(((210.0 / 25.4) * 300.0).rounded())
     }
-    /// A4 height in pixels at requested dpi (297mm), rounded to even (matches HP 3508@300)
     var heightPx: Int {
-        Int(((297.0 / 25.4) * Double(resolution.rawValue)).rounded())
+        Int(((297.0 / 25.4) * 300.0).rounded())
     }
 }
 

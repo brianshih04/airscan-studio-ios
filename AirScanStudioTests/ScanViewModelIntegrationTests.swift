@@ -33,6 +33,7 @@ final class ScanViewModelIntegrationTests: XCTestCase {
         await MainActor.run {
             vm.mode = .real
             vm.settings.source = .platen
+            vm.addManual(host: "10.1.121.175")  // Brother
         }
         for (dpi, color) in matrix {
             await MainActor.run {
@@ -58,6 +59,46 @@ final class ScanViewModelIntegrationTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(pages, 1)
             print("MATRIX \(dpi)dpi \(color.rawValue): ok, pages=\(pages)")
         }
+    }
+
+
+
+    func testPlaten300ColorNow() async throws {
+        // 測試透過 launch argument 指定 pinned scanner（見 test runner），
+        // 或使用預先寫入的 UserDefaults
+        let vm = await ScanViewModel()
+        await MainActor.run {
+            vm.mode = .real
+            vm.settings.source = .platen
+            vm.settings.resolution = .dpi300
+            vm.settings.colorMode = .rgb24
+            vm.addManual(host: "10.1.121.175")  // Brother (paper on glass required)
+        }
+        try await vm.startScanForTesting()
+        let docs = await vm.documents
+        let newest = try XCTUnwrap(docs.first)
+        let url = await newest.fileURL
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        print("PLATEN_FILE:\(url.path)")
+    }
+
+
+
+    func testBrother600ColorSingle() async throws {
+        let vm = await ScanViewModel()
+        await MainActor.run {
+            vm.mode = .real
+            vm.settings.source = .platen
+            vm.settings.resolution = .dpi600
+            vm.settings.colorMode = .rgb24
+            vm.addManual(host: "10.1.121.175")
+        }
+        try await vm.startScanForTesting()
+        let docs = await vm.documents
+        let newest = try XCTUnwrap(docs.first)
+        let pages = await newest.pageCount
+        XCTAssertGreaterThanOrEqual(pages, 1)
+        print("BROTHER600: ok")
     }
 
 }

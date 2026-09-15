@@ -16,13 +16,14 @@ final class ESCLTests: XCTestCase {
     }
 
     func testA4PixelDimensions() {
-        var s = ScanSettings()
-        s.resolution = .dpi150
-        XCTAssertEqual(s.widthPx, 1240)   // 210mm at 150dpi
-        XCTAssertEqual(s.heightPx, 1754)  // 297mm at 150dpi
-        s.resolution = .dpi300
+        // eSCL Width/Height are in 1/300-inch units, independent of dpi
+        let s = ScanSettings()
         XCTAssertEqual(s.widthPx, 2480)
         XCTAssertEqual(s.heightPx, 3508)
+        var s150 = ScanSettings()
+        s150.resolution = .dpi150
+        XCTAssertEqual(s150.widthPx, 2480)   // Width/Height unchanged
+        XCTAssertEqual(s150.heightPx, 3508)
     }
 
     func testJobPhaseParsing() {

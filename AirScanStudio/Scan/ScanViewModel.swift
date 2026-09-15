@@ -34,7 +34,12 @@ final class ScanViewModel: ObservableObject {
     var isBrowsing: Bool { browser.isBrowsing }
     @Published var selectedScannerID: String?
     var selectedScanner: DiscoveredScanner? {
-        discovered.first(where: { $0.id == selectedScannerID }) ?? discovered.first
+        // Pinned manual scanner wins over auto-discovered (prevents discovered HP hijacking
+        // when user explicitly pinned a device for testing)
+        if let manual = discovered.first(where: { $0.id.hasPrefix("manual-") }) {
+            return manual
+        }
+        return discovered.first(where: { $0.id == selectedScannerID }) ?? discovered.first
     }
 
     let browser = ScannerBrowser()
@@ -122,7 +127,13 @@ final class ScanViewModel: ObservableObject {
     private func runRealScan() async throws {
         if selectedScanner == nil {
             // Auto-register pinned scanner + kick discovery before giving up
-            let pinned = UserDefaults.standard.string(forKey: "manualScannerHost") ?? ""
+            let args = ProcessInfo.processInfo.arguments
+            let pinned: String
+            if let i = args.firstIndex(of: "-manualScannerHost"), i + 1 < args.count {
+                pinned = args[i + 1]
+            } else {
+                pinned = UserDefaults.standard.string(forKey: "manualScannerHost") ?? ""
+            }
             NSLog("[AirScan] runRealScan: no scanner selected; pinned='\(pinned)' discovered=\(browser.scanners.count)")
             if !pinned.isEmpty {
                 addManual(host: pinned)
@@ -190,6 +201,11 @@ final class ScanViewModel: ObservableObject {
     func startScanForTesting(source: ScanSource? = nil) async throws {
         if let source { settings.source = source }
         try await runRealScan()
+        await MainActor.run {
+            if let s = selectedScanner {
+                print("SCANUSED: \(s.host):\(s.port) secure=\(s.isSecure) dpi=\(settings.resolution.rawValue) color=\(settings.colorMode.rawValue) size=\(settings.widthPx)x\(settings.heightPx)")
+            }
+        }
     }
 
     // MARK: - Persistence

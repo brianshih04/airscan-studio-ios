@@ -59,9 +59,20 @@ struct ESCLClient {
         req.httpMethod = "POST"
         req.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         req.httpBody = xml.data(using: .utf8)
-        let (_, resp) = try await session.data(for: req)
+        // Scanner may briefly report busy (503) between jobs; retry with backoff.
+        var resp: URLResponse?
+        var data: Data?
+        for attempt in 0..<5 {
+            (data, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse else { throw ESCLError.badResponse }
+            NSLog("[AirScan] POST ScanJobs -> HTTP \(http.statusCode) (attempt \(attempt))")
+            if http.statusCode == 503 {
+                try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 8_000_000_000))
+                continue
+            }
+            break
+        }
         guard let http = resp as? HTTPURLResponse else { throw ESCLError.badResponse }
-        NSLog("[AirScan] POST ScanJobs -> HTTP \(http.statusCode)")
         guard http.statusCode == 201, let location = http.value(forHTTPHeaderField: "Location") else {
             throw ESCLError.jobRejected(status: http.statusCode)
         }
@@ -101,9 +112,10 @@ struct ESCLClient {
     func pullPage(jobURL: URL) async throws -> Data? {
         let next = jobURL.appendingPathComponent("NextDocument")
         for poll in 0..<120 { // ~2 min ceiling
-            // 1) try the document first (Brother serves while Pending)
+            // 1) try the document first (Brother serves while Pending; 600dpi pages
+            //    can take >60s to render/transfer)
             var req = URLRequest(url: next)
-            req.timeoutInterval = 30
+            req.timeoutInterval = 120
             let (data, resp) = try await session.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
             let mime = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? ""

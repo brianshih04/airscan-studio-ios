@@ -75,16 +75,23 @@ Mac 與印表機同一區網（10.1.121.0/24）。App 版本 0.1.0 MVP（commit 
 
 | dpi | 色彩 | 結果 | 輸出尺寸 | 檔案大小 |
 |---|---|---|---|---|
-| 200 | RGB24 | ✅ | 1680×2193 | 174KB |
-| 200 | Grayscale8 | ✅ | 1680×2197 | 179KB |
-| 300 | RGB24 | ✅ | 2512×3290 | 320KB |
-| 300 | Grayscale8 | ✅ | 2512×3294 | 349KB |
-| 600 | RGB24 | ✅ | 5072×6578 | 1.17MB |
-| 600 | Grayscale8 | ✅ | 5072×6582 | 1.41MB |
+| 200 | RGB24 | ✅ | 1632×2306 | 176KB |
+| 200 | Grayscale8 | ✅ | 1632×2306 | 181KB |
+| 300 | RGB24 | ✅ | 2464×3460 | 325KB |
+| 300 | Grayscale8 | ✅ | 2464×3460 | 357KB |
+| 600 | RGB24 | ✅ | 4928×6925 | 1.20MB |
+
+（600dpi 灰階單測透過 curl probe 亦通過；此表為 App `ScanViewModel` 管線實測）
+
+重要修正：先前 Android 版報告的「1680×2193 非 A4 尺寸問題」根因已確認——
+eSCL 的 `Width/Height` 單位是 **1/300 inch**（與 dpi 無關）。App 舊版誤隨 dpi 放大
+（600dpi 送 4961×6996，超出 caps Max 被钳制為 2550×3508）。修正為固定 2480×3508 後，
+各 dpi 皆回傳正確的 A4 比例輸出（2464×3460 @300dpi、4928×6925 @600dpi）。
 
 注意：
-- Brother 需 10–15 秒 job 間隔（back-to-back POST 會 503/400）；測試與 App 已加重試。
-- 各 dpi 皆回原生感測範圍比例（非請求 A4），200dpi 1680×2193 與 Android 版報告數字一致。
+- Brother 需 10–15 秒 job 間隔（back-to-back POST 會 503/400）；App 的 createJob 已加 503 指數退避重試。
+- Brother 的 NextDocument 在 600dpi 時需 >60s 才回應（App timeout 已調至 120s）。
+- 輸出為感光元件滿版（2464×3460 ≈ A4 比例），各 dpi 間差異為 Brother 韌體行為。
 - App 的 `ScanResolution` enum 已補 100/200dpi（Brother 支援離散解析度）。
 
 ## 7. 已知限制與後續
