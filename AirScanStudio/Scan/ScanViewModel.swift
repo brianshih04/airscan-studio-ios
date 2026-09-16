@@ -38,6 +38,16 @@ final class ScanViewModel: ObservableObject {
     @Published var awaitingNextPage = false
     /// 逐頁 prompt 開關（整合測試/自動化設 false：掃一頁直接完成）
     var flatbedPromptEnabled = true
+    // MARK: OCR（backlog 階段一：開關 + 掃描後背景辨識）
+    /// 文字辨識開關（預設關，比照 Android）。獨立 UserDefaults key，避免動到 ScanSettings 的 Codable。
+    @Published var ocrEnabled: Bool = false {
+        didSet { UserDefaults.standard.set(ocrEnabled, forKey: "ocrEnabled") }
+    }
+    /// OCR 進行中的文件路徑（詳情頁顯示進度）
+    @Published var ocrRunningPaths: Set<String> = []
+    /// OCR 結果狀態（路徑 → outcome），session 內有效；文字本身落在磁碟 <文件>.txt
+    enum OcrOutcome: Equatable { case hasText(chars: Int), noText, failed(String) }
+    @Published var ocrOutcome: [String: OcrOutcome] = [:]
     /// 目前逐頁累積的頁數（供 UI 顯示）
     @Published var flatbedPageCount = 0
     /// 進行中的掃描工作（供取消）
@@ -70,6 +80,7 @@ final class ScanViewModel: ObservableObject {
            let m = Mode(rawValue: saved) {
             mode = m
         }
+        ocrEnabled = UserDefaults.standard.bool(forKey: "ocrEnabled")
         loadSettings()
         loadDocuments()
         // Forward browser changes so DevicesView updates on discovery
@@ -177,6 +188,7 @@ final class ScanViewModel: ObservableObject {
             documents.insert(doc, at: 0)
             persistDocuments()
             phase = .done
+            runOCRAfterScan(doc)
         } catch {
             phase = .failed("儲存失敗: \(error.localizedDescription)")
         }
@@ -288,6 +300,41 @@ final class ScanViewModel: ObservableObject {
         documents.insert(doc, at: 0)
         persistDocuments()
         phase = .done
+        runOCRAfterScan(doc)
+    }
+
+    // MARK: - OCR（backlog 階段一/二）
+
+    /// 掃描完成後背景執行 OCR；寫 <文件>.txt，PDF 疊不可見文字層（原地替換）。
+    private func runOCRAfterScan(_ doc: ScannedDocument) {
+        guard ocrEnabled else { return }
+        let path = doc.fileURL.path
+        ocrRunningPaths.insert(path)
+        let languages = OCRService.defaultLanguages
+        Task.detached(priority: .utility) { [weak self] in
+            do {
+                let result = try OCRService.processDocument(at: doc.fileURL, languages: languages)
+                await MainActor.run { [weak self] in
+                    self?.ocrRunningPaths.remove(path)
+                    if result.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self?.ocrOutcome[path] = .noText
+                    } else {
+                        self?.ocrOutcome[path] = .hasText(chars: result.fullText.count)
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.ocrRunningPaths.remove(path)
+                    self?.ocrOutcome[path] = .failed(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    /// 文件詳情頁「重新辨識」：OCR 未自動跑過（開關沒開）或想重跑時使用。
+    func runOCRNow(for doc: ScannedDocument) {
+        guard !ocrRunningPaths.contains(doc.fileURL.path) else { return }
+        runOCRAfterScan(doc)
     }
 
     // MARK: - Flatbed 逐頁合併 PDF

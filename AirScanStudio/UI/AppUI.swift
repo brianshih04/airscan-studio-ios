@@ -319,6 +319,22 @@ struct ScanSettingsView: View {
                         .font(.subheadline)
                 }
 
+                Group {
+                    Text("文字辨識").font(.subheadline.bold())
+                    VStack(spacing: 8) {
+                        Toggle(isOn: $scanVM.ocrEnabled) {
+                            HStack {
+                                Image(systemName: "text.viewfinder")
+                                    .foregroundColor(Color.primaryAccent)
+                                Text("OCR 辨識文字")
+                            }
+                        }
+                        .font(.subheadline)
+                        Text("掃描後自動辨識中英文，產出可搜尋/複製文字的 PDF 與 .txt。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
                 scanButton
             }
             .padding(16)
@@ -492,7 +508,7 @@ struct DocumentsView: View {
             } else {
                 List {
                     ForEach(scanVM.documents) { doc in
-                        DocumentRow(doc: doc)
+                        DocumentRow(doc: doc, scanVM: scanVM)
                             .swipeActions {
                                 Button(role: .destructive) {
                                     scanVM.deleteDocument(doc)
@@ -510,6 +526,7 @@ struct DocumentsView: View {
 
 struct DocumentRow: View {
     let doc: ScannedDocument
+    @ObservedObject var scanVM: ScanViewModel
 
     var body: some View {
         HStack(spacing: 12) {
@@ -524,7 +541,7 @@ struct DocumentRow: View {
                 }
             }
             Spacer()
-            NavigationLink(destination: DocumentPreviewView(doc: doc)) {
+            NavigationLink(destination: DocumentPreviewView(doc: doc, scanVM: scanVM)) {
                 Image(systemName: "chevron.right").font(.caption)
             }.opacity(0.5)
         }
@@ -547,24 +564,116 @@ struct DocumentRow: View {
     }
 }
 
-// MARK: - Document Preview
+// MARK: - Document Preview（含 OCR「文字」分頁，backlog 階段一）
 
 struct DocumentPreviewView: View {
     let doc: ScannedDocument
+    @ObservedObject var scanVM: ScanViewModel
+    @State private var tab: Int = 0 // 0=原稿 1=文字
+    @State private var copied = false
 
     var body: some View {
-        Group {
-            if doc.fileURL.pathExtension == "pdf" {
-                PDFKitView(url: doc.fileURL)
-            } else if FileManager.default.fileExists(atPath: doc.fileURL.path),
-                      let img = UIImage(data: (try? Data(contentsOf: doc.fileURL)) ?? Data()) {
-                ScrollView { Image(uiImage: img).resizable().scaledToFit() }
+        VStack(spacing: 0) {
+            Picker("檢視", selection: $tab) {
+                Text("原稿").tag(0)
+                Text("文字").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+
+            if tab == 0 {
+                previewContent
             } else {
-                ContentUnavailableView("無法預覽", systemImage: "exclamationmark.triangle")
+                textTab
             }
         }
         .navigationTitle(doc.name)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder private var previewContent: some View {
+        if doc.fileURL.pathExtension == "pdf" {
+            PDFKitView(url: doc.fileURL)
+        } else if FileManager.default.fileExists(atPath: doc.fileURL.path),
+                  let img = UIImage(data: (try? Data(contentsOf: doc.fileURL)) ?? Data()) {
+            ScrollView { Image(uiImage: img).resizable().scaledToFit() }
+        } else {
+            ContentUnavailableView("無法預覽", systemImage: "exclamationmark.triangle")
+        }
+    }
+
+    /// OCR 結果分頁：辨識中 / 未偵測到文字 / 結果預覽 + 複製（比照 Android 文字分頁）
+    @ViewBuilder private var textTab: some View {
+        let path = doc.fileURL.path
+        if scanVM.ocrRunningPaths.contains(path) {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("文字辨識中…").font(.subheadline).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let txt = OCRTextStore.load(for: doc) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("辨識結果").font(.headline)
+                        Spacer()
+                        Button {
+                            UIPasteboard.general.string = txt
+                            copied = true
+                        } label: {
+                            Label(copied ? "已複製" : "複製", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                .font(.subheadline)
+                        }
+                        .accessibilityIdentifier("ocrCopyButton")
+                    }
+                    Text(txt)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(16)
+            }
+        } else if case .noText = scanVM.ocrOutcome[path] {
+            ContentUnavailableView("未偵測到文字", systemImage: "doc.text.magnifyingglass",
+                                   description: Text("掃描頁保留，可調整內容後重新辨識。"))
+        } else if case .failed(let msg) = scanVM.ocrOutcome[path] {
+            ContentUnavailableView {
+                Label("辨識失敗", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(msg)
+            } actions: {
+                Button("重新辨識") { scanVM.runOCRNow(for: doc) }
+            }
+        } else {
+            // 沒有 .txt：OCR 未跑過（開關沒開）。提供手動執行。
+            VStack(spacing: 14) {
+                ContentUnavailableView("尚未辨識文字", systemImage: "text.viewfinder",
+                                       description: Text("開啟「OCR 辨識文字」後新掃描會自動辨識；也可對此文件直接執行。"))
+                Button {
+                    scanVM.runOCRNow(for: doc)
+                } label: {
+                    Label("辨識此文件", systemImage: "play.fill")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 24).padding(.vertical, 10)
+                        .background(Capsule().fill(Color.primaryAccent))
+                }
+                .accessibilityIdentifier("ocrRunButton")
+            }
+        }
+    }
+}
+
+/// OCR 文字讀取：<文件>.txt 與文件同目錄同名
+enum OCRTextStore {
+    static func textFileURL(for doc: ScannedDocument) -> URL {
+        doc.fileURL.deletingPathExtension().appendingPathExtension("txt")
+    }
+    static func load(for doc: ScannedDocument) -> String? {
+        let url = textFileURL(for: doc)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
     }
 }
 
