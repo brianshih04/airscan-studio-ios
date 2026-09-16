@@ -378,7 +378,7 @@ struct ScanSettingsView: View {
         } message: {
             if case .failed(let msg) = scanVM.phase { Text(msg) }
         }
-        .onChange(of: scanVM.phase) { ph in
+        .onChange(of: scanVM.phase) { _, ph in
             if case .failed = ph { showError = true }
         }
     }

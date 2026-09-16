@@ -43,8 +43,9 @@ final class ScannerBrowser: ObservableObject {
         let resolved: (String, Int)? = await withCheckedContinuation { cont in
             let conn = NWConnection(to: ep, using: .tcp)
             let box = LockedBox<Bool>(false)
-            conn.stateUpdateHandler = { state in
-                guard !box.value else { return }
+            // [weak conn] 打破 stateUpdateHandler 捕獲 conn、conn 又持有 handler 的強參照環（review #20）
+            conn.stateUpdateHandler = { [weak conn] state in
+                guard let conn = conn, !box.value else { return }
                 if state == .ready {
                     box.value = true
                     var host = "0.0.0.0"

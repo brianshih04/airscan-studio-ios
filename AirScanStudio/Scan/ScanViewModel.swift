@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import PDFKit
+import UIKit
 import Combine
 
 /// Central scan orchestration: Mock or Real (eSCL) behind one flow.
@@ -131,19 +132,31 @@ final class ScanViewModel: ObservableObject {
 
     // MARK: - Scan
 
+    /// 取消/重啟競態防護（review #3）：每次啟動掃描遞增 generation；
+    /// 舊 Task 收尾時若 generation 已變，代表使用者已取消並重啟新掃描，
+    /// 舊 Task 不得再寫 phase／scanTask（避免蓋掉新掃描狀態、雙掃描並行）。
+    private var scanGeneration = 0
+
     /// UI 進入點：儲存 scanTask 以支援取消。
     func startScan() {
         guard scanTask == nil else { return } // 防止重複啟動
+        scanGeneration += 1
+        let generation = scanGeneration
         scanTask = Task { [weak self] in
-            defer { Task { @MainActor in self?.scanTask = nil } }
-            await self?.performScan()
+            await self?.performScan(generation: generation)
+            await MainActor.run { [weak self] in
+                // 無條件清 nil 是安全的：startScan 以 scanTask == nil 為啟動前提，
+                // 新 Task 只能在本 Task 收尾後建立，不會誤清新掃描
+                self?.scanTask = nil
+            }
         }
     }
 
     /// 取消目前掃描：讓 Task 收到 CancellationError，並清理 eSCL job。
+    /// 只把 generation 標記為無效（防舊 Task 蓋狀態）；scanTask 由 Task 本身收尾清 nil。
     func cancelScan() {
+        scanGeneration += 1
         scanTask?.cancel()
-        scanTask = nil
         phase = .idle
         // 逐頁等待中的 continuation 需 resume（拋 CancellationError），避免流程懸掛
         if let cont = flatbedContinuation {
@@ -160,7 +173,7 @@ final class ScanViewModel: ObservableObject {
         NSLog("[AirScan] scan canceled by user")
     }
 
-    private func performScan() async {
+    private func performScan(generation: Int) async {
         do {
             switch mode {
             case .mock:
@@ -169,13 +182,15 @@ final class ScanViewModel: ObservableObject {
                 try await runRealScan()
             }
         } catch is CancellationError {
-            // 使用者取消：回到 idle，不顯示錯誤
-            phase = .idle
+            // 使用者取消：回到 idle，不顯示錯誤。只在仍是本次掃描時寫狀態
+            if scanGeneration == generation { phase = .idle }
         } catch {
             if Task.isCancelled {
-                phase = .idle
-            } else {
+                if scanGeneration == generation { phase = .idle }
+            } else if scanGeneration == generation {
                 phase = .failed(error.localizedDescription)
+            } else {
+                NSLog("[AirScan] scan generation \(generation) superseded; dropping error")
             }
         }
     }
@@ -291,32 +306,64 @@ final class ScanViewModel: ObservableObject {
 
         phase = .saving
         let id = UUID()
-        let url: URL
-        if pages.count == 1 {
-            url = Self.documentsDirectory().appendingPathComponent("scan_\(id.uuidString.prefix(8)).jpg")
-            try pages[0].write(to: url)
-        } else {
-            // 多頁（ADF 連掃或 Flatbed 逐頁累積）組成單一 PDF 存入文件庫
-            url = Self.documentsDirectory().appendingPathComponent("scan_\(id.uuidString.prefix(8)).pdf")
-            let pdf = PDFDocument()
-            for (i, data) in pages.enumerated() {
-                if let img = UIImage(data: data), let page = PDFPage(image: img) {
-                    pdf.insert(page, at: i)
-                }
+        // PDF 組裝/寫檔移出 MainActor（review #9）：多頁 JPEG 解碼 + PDF 編碼 + 寫檔
+        // 不再凍結 UI。回傳 (URL, 實際寫入頁數)：解碼失敗的頁不計，metadata 與 PDF 一致（review #12）。
+        let pageData = pages
+        let (url, writtenPages) = try await Task.detached(priority: .userInitiated) { () -> (URL, Int) in
+            if pageData.count == 1 {
+                let url = Self.documentsDirectory().appendingPathComponent("scan_\(id.uuidString.prefix(8)).jpg")
+                try pageData[0].write(to: url)
+                return (url, 1)
             }
-            try pdf.write(to: url)
-        }
+            // 多頁（ADF 連掃或 Flatbed 逐頁累積）：逐頁 CGPDFContext 串流寫出（review #2）
+            let url = Self.documentsDirectory().appendingPathComponent("scan_\(id.uuidString.prefix(8)).pdf")
+            let written = try Self.writePDF(from: pageData, to: url)
+            return (url, written)
+        }.value
         flatbedPageCount = 0
         let doc = ScannedDocument(
             name: "掃描 \(Self.dateFormatter.string(from: Date()))",
             fileURL: url,
-            pageCount: pages.count,
+            pageCount: writtenPages,
             settings: settings
         )
         documents.insert(doc, at: 0)
         persistDocuments()
         phase = .done
         runOCRAfterScan(doc)
+    }
+
+    /// 逐頁把 JPEG page data 以 CGPDFContext 串流寫成 PDF：每頁解碼 → 寫入 → 釋放，
+    /// 不再把全部頁面解碼圖同時駐留記憶體（50 頁 × 600dpi 解碼可達數 GB → jetsam）。
+    /// 純靜態函式（不碰 actor 狀態），nonisolated 供背景 Task 呼叫。
+    /// 注意：mediaBox 必須在 context 建立時給定（per-page kCGPDFContextMediaBox 不會覆蓋
+    /// context 預設 Letter，見 OCRService.makeSearchablePDF 同坑），故先解碼首頁取尺寸。
+    nonisolated static func writePDF(from pages: [Data], to url: URL) throws -> Int {
+        var written = 0
+        var ctx: CGContext?
+        for data in pages {
+            guard let img = UIImage(data: data), let cg = img.cgImage else { continue }
+            if ctx == nil {
+                // 首頁：以實際像素尺寸建立 context（掃描頁面尺寸一致）
+                let box = CGRect(x: 0, y: 0, width: CGFloat(cg.width), height: CGFloat(cg.height))
+                var mediaBox = box
+                ctx = CGContext(url as CFURL, mediaBox: &mediaBox, nil)
+                guard ctx != nil else {
+                    throw AppError("無法建立 PDF 輸出 context")
+                }
+            }
+            let box = CGRect(x: 0, y: 0, width: CGFloat(cg.width), height: CGFloat(cg.height))
+            ctx!.beginPDFPage([kCGPDFContextMediaBox: NSValue(cgRect: box)] as CFDictionary)
+            ctx!.draw(cg, in: box)
+            ctx!.endPDFPage()
+            written += 1
+        }
+        guard let ctx, written > 0 else {
+            try? FileManager.default.removeItem(at: url)
+            throw AppError("頁面影像解碼失敗，無法組成 PDF")
+        }
+        ctx.closePDF()
+        return written
     }
 
     // MARK: - OCR（backlog 階段一/二）
@@ -390,7 +437,8 @@ final class ScanViewModel: ObservableObject {
 
     // MARK: - Persistence
 
-    static func documentsDirectory() -> URL {
+    /// nonisolated：只依賴 FileManager，供背景 Task（PDF 組裝）呼叫。
+    nonisolated static func documentsDirectory() -> URL {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Scans", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -410,8 +458,10 @@ final class ScanViewModel: ObservableObject {
         }
     }
 
+    /// 文件庫只存「相對檔名」（review #1）：iOS container 絕對路徑在 app 更新後會改變，
+    /// 存絕對路徑會導致載入時 fileExists 全數失敗、清單全滅。
     private func persistDocuments() {
-        let entries = documents.map { ["name": $0.name, "url": $0.fileURL.path, "pages": String($0.pageCount)] }
+        let entries = documents.map { ["name": $0.name, "file": $0.fileURL.lastPathComponent, "pages": String($0.pageCount)] }
         if let data = try? JSONSerialization.data(withJSONObject: entries) {
             UserDefaults.standard.set(data, forKey: "documents")
         }
@@ -420,16 +470,31 @@ final class ScanViewModel: ObservableObject {
     private func loadDocuments() {
         guard let data = UserDefaults.standard.data(forKey: "documents"),
               let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { return }
+        let dir = Self.documentsDirectory()
         documents = entries.compactMap { e in
-            guard let name = e["name"], let path = e["url"], let pages = Int(e["pages"] ?? "1") else { return nil }
-            let url = URL(fileURLWithPath: path)
-            guard FileManager.default.fileExists(atPath: path) else { return nil }
+            guard let name = e["name"], let pages = Int(e["pages"] ?? "1") else { return nil }
+            // 新格式存 "file"（相對檔名）；舊格式存 "url"（絕對路徑）→ migration：
+            // 取 lastPathComponent 重拼目前 Documents/Scans 目錄
+            let fileName: String?
+            if let f = e["file"] {
+                fileName = f
+            } else if let path = e["url"] {
+                fileName = URL(fileURLWithPath: path).lastPathComponent
+            } else {
+                fileName = nil
+            }
+            guard let fileName else { return nil }
+            let url = dir.appendingPathComponent(fileName)
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
             return ScannedDocument(name: name, fileURL: url, pageCount: pages, settings: settings)
         }
     }
 
     func deleteDocument(_ doc: ScannedDocument) {
         try? FileManager.default.removeItem(at: doc.fileURL)
+        // 一併刪除 OCR 文字 sidecar，避免 .txt 孤兒留在磁碟（review #14）
+        let txtURL = doc.fileURL.deletingPathExtension().appendingPathExtension("txt")
+        try? FileManager.default.removeItem(at: txtURL)
         documents.removeAll { $0.id == doc.id }
         persistDocuments()
     }

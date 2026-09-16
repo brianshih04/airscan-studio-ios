@@ -65,9 +65,8 @@ struct ESCLClient {
         req.httpBody = xml.data(using: .utf8)
         // Scanner may briefly report busy (503) between jobs; retry with backoff.
         var resp: URLResponse?
-        var data: Data?
         for attempt in 0..<5 {
-            (data, resp) = try await session.data(for: req)
+            (_, resp) = try await session.data(for: req)
             guard let http = resp as? HTTPURLResponse else { throw ESCLError.badResponse }
             NSLog("[AirScan] POST ScanJobs -> HTTP \(http.statusCode) (attempt \(attempt))")
             if http.statusCode == 503 {
@@ -136,6 +135,12 @@ struct ESCLClient {
                 if poll % 10 == 0 { NSLog("[AirScan] pull poll \(poll): doc=\(code) job=\(phase.rawValue)") }
                 if phase == .aborted || phase == .canceled {
                     NSLog("[AirScan] job ended: \(phase.rawValue)")
+                    return nil
+                }
+                // HP ADF：最後一頁取回後 job=Completed 且 NextDocument 已非 200 —— 視為終態，
+                // 避免空轉滿 120 輪（~2 分鐘）才回 nil（review #4）
+                if phase == .completed && code != 200 {
+                    NSLog("[AirScan] job completed; no more documents")
                     return nil
                 }
             }
@@ -238,7 +243,10 @@ struct ESCLClient {
     private func parseCapabilities(_ data: Data) throws -> ScannerCapabilities {
         var caps = ScannerCapabilities()
         guard let xml = String(data: data, encoding: .utf8) else { return caps }
-        caps.maker = Self.extract(xml, tag: "pwg:MakerAndModel") ?? ""
+        // eSCL/PWG 規範元素名無 "r"（review #17）：拼錯會讓 maker/model 永遠解析不到
+        caps.maker = Self.extract(xml, tag: "pwg:MakeAndModel")
+                 ?? Self.extract(xml, tag: "pwg:MakerAndModel")  // 舊版兼容：避免行為變動
+                 ?? ""
         caps.version = Self.extract(xml, tag: "pwg:Version") ?? "2.0"
         if xml.contains("schemas.hp.com/imaging/escl") {
             caps.scanNamespace = "http://schemas.hp.com/imaging/escl/2011/05/03"

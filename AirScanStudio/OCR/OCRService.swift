@@ -57,7 +57,7 @@ enum OCRService {
     /// 對已存的掃描文件（.jpg / .pdf）執行 OCR：
     /// - 寫出 <文件名>.txt（全文）
     /// - PDF：以 drawPDFPage 保留原始內容、疊加不可見文字層後原地替換
-    static func processDocument(at url: URL, assumedDPI: Int = 300, languages: [String] = OCRService.defaultLanguages) throws -> OCRDocumentResult {
+    static func processDocument(at url: URL, languages: [String] = OCRService.defaultLanguages) throws -> OCRDocumentResult {
         let ext = url.pathExtension.lowercased()
         var pageResults: [OCRPageResult] = []
         var sourcePDF: PDFDocument?
@@ -84,10 +84,13 @@ enum OCRService {
             let tmp = url.deletingLastPathComponent()
                 .appendingPathComponent("ocr_\(UUID().uuidString.prefix(8)).pdf")
             try makeSearchablePDF(from: pdf, results: pageResults, to: tmp)
+            // 原子性原地替換（review #7）：replaceItemAt 失敗時原稿仍在；
+            // 舊的 removeItem + moveItem 若中途失敗（磁碟滿等）會永久遺失原始掃描檔
             if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+            } else {
+                try FileManager.default.moveItem(at: tmp, to: url)
             }
-            try FileManager.default.moveItem(at: tmp, to: url)
             layer = true
         }
         NSLog("[AirScan] OCR: \(url.lastPathComponent) → \(fullText.count) chars, layer=\(layer)")
@@ -161,7 +164,11 @@ enum OCRService {
         guard longEdge > maxLongEdge, longEdge > 0 else { return image }
         let ratio = maxLongEdge / longEdge
         let newSize = CGSize(width: image.size.width * ratio, height: image.size.height * ratio)
-        let renderer = UIGraphicsImageRenderer(size: newSize)
+        // format.scale = 1：預設帶螢幕 scale（3x），「長邊 4096」實際渲染成 ~12288px、
+        // bitmap 膨脹 ~9 倍，600dpi OCR 記憶體爆炸（review #6）
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
         return renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: newSize))
         }
