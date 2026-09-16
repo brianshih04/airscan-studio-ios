@@ -32,10 +32,11 @@ iOS 用內建 Vision framework：離線、OS 內建多語模型、無下載流�
   - PDF 頁面渲染給 OCR 用 `PDFPage.thumbnail(of:for:)`；手動 lockFocus+翻轉矩陣會把頁面畫反 → OCR 全亂碼
 - 驗收：PDF 內可搜尋/複製中文與英文（macOS 端獨立驗證程式 15/15 PASS）
 
-## 階段三（選配）：語言選擇 UI ⏳ 未實作
+## 階段三（選配）：語言選擇 UI ✅
 
-- 設定頁 OCR 區塊加語言多選（繁中/簡中/英/日/韓）
-- 對應 VNRecognizeTextRequest.recognitionLanguages
+- 掃描設定頁 OCR 區塊內語言多選 chips（繁中/簡中/英/日/韓，toggle 開啟時顯示）
+- `ScanViewModel.ocrLanguages`（Set，UserDefaults key `ocrLanguages` 持久化）；`ocrLanguageList` 以固定順序輸出，未選擇時回落預設 `zh-Hant`/`zh-Hans`/`en-US`
+- 對應 VNRecognizeTextRequest.recognitionLanguages；`OCRHardwareTests` 實機走同一設定路徑
 
 ## 已知差異 vs Android
 

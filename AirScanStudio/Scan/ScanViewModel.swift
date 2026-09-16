@@ -43,6 +43,19 @@ final class ScanViewModel: ObservableObject {
     @Published var ocrEnabled: Bool = false {
         didSet { UserDefaults.standard.set(ocrEnabled, forKey: "ocrEnabled") }
     }
+    /// OCR 語言多選（階段三）。固定順序輸出；空集合時回落預設。
+    @Published var ocrLanguages: Set<String> = [] {
+        didSet { UserDefaults.standard.set(Array(ocrLanguages), forKey: "ocrLanguages") }
+    }
+    /// 支援的 OCR 語言（VNRecognizeTextRequest accurate 支援）
+    static let ocrLanguageOptions: [(code: String, name: String)] = [
+        ("zh-Hant", "繁中"), ("zh-Hans", "簡中"), ("en-US", "英文"), ("ja-JP", "日文"), ("ko-KR", "韓文")
+    ]
+    /// 語言以固定順序輸出（zh-Hant 優先，對齊 Android 版行為）
+    var ocrLanguageList: [String] {
+        let selected = Self.ocrLanguageOptions.map(\.code).filter { ocrLanguages.contains($0) }
+        return selected.isEmpty ? OCRService.defaultLanguages : selected
+    }
     /// OCR 進行中的文件路徑（詳情頁顯示進度）
     @Published var ocrRunningPaths: Set<String> = []
     /// OCR 結果狀態（路徑 → outcome），session 內有效；文字本身落在磁碟 <文件>.txt
@@ -81,6 +94,9 @@ final class ScanViewModel: ObservableObject {
             mode = m
         }
         ocrEnabled = UserDefaults.standard.bool(forKey: "ocrEnabled")
+        if let langs = UserDefaults.standard.array(forKey: "ocrLanguages") as? [String] {
+            ocrLanguages = Set(langs)
+        }
         loadSettings()
         loadDocuments()
         // Forward browser changes so DevicesView updates on discovery
@@ -310,7 +326,7 @@ final class ScanViewModel: ObservableObject {
         guard ocrEnabled else { return }
         let path = doc.fileURL.path
         ocrRunningPaths.insert(path)
-        let languages = OCRService.defaultLanguages
+        let languages = ocrLanguageList
         Task.detached(priority: .utility) { [weak self] in
             do {
                 let result = try OCRService.processDocument(at: doc.fileURL, languages: languages)

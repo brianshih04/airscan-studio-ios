@@ -53,8 +53,10 @@ xcodebuild -scheme AirScanStudio \
 | Brother | 7,414 | 6,816 字可搜尋 | ~34 秒 |
 | HP | 7,870 | 6,814 字可搜尋 | ~33 秒 |
 
-驗證矩陣：macOS 端演算法驗證 15/15、模擬器單元測試 OCR 8/8 + eSCL 9/9、實機 ADF 端到端（掃描 → 背景 OCR → searchable PDF + `.txt`）。
-實測抓到並修復：PDF context `mediaBox` 需建立時給定（nil 落 Letter 612×792 會裁切原稿）；PDF 頁渲染需用 `PDFPage.thumbnail`（手動翻轉矩陣會畫反 → OCR 亂碼）。
+驗證矩陣：macOS 端演算法驗證 15/15、模擬器單元測試 OCR 9/9 + eSCL 9/9、UI 測試（Mock OCR 全流程 / Mock 掃描流程 / AirPrint sheet）全綠、
+實機 ADF 端到端（掃描 → 背景 OCR → searchable PDF + `.txt`）。
+實測抓到並修復：PDF context `mediaBox` 需建立時給定（nil 落 Letter 612×792 會裁切原稿）；PDF 頁渲染需用 `PDFPage.thumbnail`（手動翻轉矩陣會畫反 → OCR 亂碼）；
+iOS 26 segmented Picker 對 Accessibility 不可見（詳情頁分頁改自製按鈕）；文件列表 row 導航補 `NavigationStack`（`navigationDestination` 才會推入）。
 
 詳見[測試報告](docs/hp-brother-ios-test-report-2026-09-15.md)、[OCR 測試報告](docs/ocr-test-report-2026-09-16.md)與 [OCR backlog](docs/ocr-backlog.md)。
 

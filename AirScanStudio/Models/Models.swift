@@ -111,7 +111,7 @@ enum DocumentFormat: String {
     case pdf = "application/pdf"
 }
 
-struct ScannedDocument: Identifiable {
+struct ScannedDocument: Identifiable, Hashable {
     let id: UUID
     var name: String
     let createdAt: Date
@@ -130,6 +130,10 @@ struct ScannedDocument: Identifiable {
         self.settings = settings
         self.actualSettingsReported = actualSettingsReported
     }
+
+    // Hashable 以 id 為準（URL/Settings 不參與，語意上同一份文件只看 id）
+    static func == (lhs: ScannedDocument, rhs: ScannedDocument) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 // MARK: - Scan Job Status (eSCL job lifecycle)

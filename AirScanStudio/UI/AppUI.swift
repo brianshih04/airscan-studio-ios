@@ -330,8 +330,37 @@ struct ScanSettingsView: View {
                             }
                         }
                         .font(.subheadline)
-                        Text("掃描後自動辨識中英文，產出可搜尋/複製文字的 PDF 與 .txt。")
+                        Text("掃描後自動辨識文字，產出可搜尋/複製文字的 PDF 與 .txt。")
                             .font(.caption).foregroundStyle(.secondary)
+                        if scanVM.ocrEnabled {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("辨識語言").font(.caption.bold()).foregroundStyle(.secondary)
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        ForEach(ScanViewModel.ocrLanguageOptions, id: \.code) { opt in
+                                            Button {
+                                                if scanVM.ocrLanguages.contains(opt.code) {
+                                                    scanVM.ocrLanguages.remove(opt.code)
+                                                } else {
+                                                    scanVM.ocrLanguages.insert(opt.code)
+                                                }
+                                            } label: {
+                                                Text(opt.name)
+                                                    .font(.caption)
+                                                    .padding(.horizontal, 12).padding(.vertical, 6)
+                                                    .background(Capsule().fill(
+                                                        scanVM.ocrLanguages.contains(opt.code) ? Color.chipGreen : Color(UIColor.secondarySystemGroupedBackground)))
+                                                    .overlay(Capsule().strokeBorder(
+                                                        scanVM.ocrLanguages.contains(opt.code) ? .clear : Color.separator, lineWidth: 1))
+                                            }
+                                            .accessibilityIdentifier("ocrLang-\(opt.code)")
+                                        }
+                                    }
+                                }
+                                Text("未選擇時使用預設（繁中＋簡中＋英文）")
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                            }
+                        }
                     }
                 }
 
@@ -499,28 +528,43 @@ struct ScanSettingsView: View {
 
 struct DocumentsView: View {
     @ObservedObject var scanVM: ScanViewModel
+    @State private var selectedDoc: ScannedDocument?
+    @State private var showPreview = false
 
     var body: some View {
-        Group {
-            if scanVM.documents.isEmpty {
-                ContentUnavailableView("尚無文件", systemImage: "doc.text.magnifyingglass",
-                                       description: Text("從首頁開始第一次掃描"))
-            } else {
-                List {
-                    ForEach(scanVM.documents) { doc in
-                        DocumentRow(doc: doc, scanVM: scanVM)
+        NavigationStack {
+            Group {
+                if scanVM.documents.isEmpty {
+                    ContentUnavailableView("尚無文件", systemImage: "doc.text.magnifyingglass",
+                                           description: Text("從首頁開始第一次掃描"))
+                } else {
+                    List {
+                        ForEach(scanVM.documents) { doc in
+                            Button {
+                                selectedDoc = doc
+                                showPreview = true
+                            } label: {
+                                DocumentRow(doc: doc, scanVM: scanVM)
+                            }
+                            .accessibilityIdentifier("documentRow-\(doc.name)")
                             .swipeActions {
                                 Button(role: .destructive) {
                                     scanVM.deleteDocument(doc)
                                 } label: { Label("刪除", systemImage: "trash") }
                             }
+                        }
                     }
+                    .listStyle(.insetGrouped)
                 }
-                .listStyle(.insetGrouped)
+            }
+            .navigationTitle("文件")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(isPresented: $showPreview) {
+                if let doc = selectedDoc {
+                    DocumentPreviewView(doc: doc, scanVM: scanVM)
+                }
             }
         }
-        .navigationTitle("文件")
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -541,9 +585,7 @@ struct DocumentRow: View {
                 }
             }
             Spacer()
-            NavigationLink(destination: DocumentPreviewView(doc: doc, scanVM: scanVM)) {
-                Image(systemName: "chevron.right").font(.caption)
-            }.opacity(0.5)
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
         }
     }
 
@@ -574,11 +616,12 @@ struct DocumentPreviewView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("檢視", selection: $tab) {
-                Text("原稿").tag(0)
-                Text("文字").tag(1)
+            // 自製分段按鈕（iOS 26 的 segmented Picker 對 Accessibility/XCUITest 不可見）
+            HStack(spacing: 8) {
+                tabButton("原稿", id: "previewTabOriginal", selected: tab == 0) { tab = 0 }
+                tabButton("文字", id: "previewTabText", selected: tab == 1) { tab = 1 }
+                Spacer()
             }
-            .pickerStyle(.segmented)
             .padding(.horizontal, 16)
             .padding(.top, 8)
 
@@ -590,6 +633,18 @@ struct DocumentPreviewView: View {
         }
         .navigationTitle(doc.name)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func tabButton(_ label: String, id: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.subheadline.weight(selected ? .semibold : .regular))
+                .padding(.horizontal, 16).padding(.vertical, 7)
+                .background(Capsule().fill(selected ? Color.primaryAccent.opacity(0.15) : Color(UIColor.secondarySystemGroupedBackground)))
+                .overlay(Capsule().strokeBorder(selected ? Color.primaryAccent : Color.separator, lineWidth: 1))
+        }
+        .foregroundColor(selected ? Color.primaryAccent : .secondary)
+        .accessibilityIdentifier(id)
     }
 
     @ViewBuilder private var previewContent: some View {

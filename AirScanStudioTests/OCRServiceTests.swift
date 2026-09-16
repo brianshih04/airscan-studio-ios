@@ -26,11 +26,29 @@ final class OCRServiceTests: XCTestCase {
 
     @MainActor
     func testOcrToggleDefaultsOffAndPersists() {
+        // 自含：先清掉先前測試/手動測試留下的狀態
+        UserDefaults.standard.removeObject(forKey: "ocrEnabled")
         let vm = ScanViewModel()
         XCTAssertFalse(vm.ocrEnabled, "OCR 預設應為關（比照 Android）")
         vm.ocrEnabled = true
         XCTAssertTrue(UserDefaults.standard.bool(forKey: "ocrEnabled"))
         vm.ocrEnabled = false
+        UserDefaults.standard.removeObject(forKey: "ocrEnabled")
+    }
+
+    @MainActor
+    func testOcrLanguageSelectionDefaultsAndOrdering() {
+        let vm = ScanViewModel()
+        // 未選擇 → 回落預設（繁中、簡中、英文）
+        XCTAssertEqual(vm.ocrLanguageList, ["zh-Hant", "zh-Hans", "en-US"])
+        // 選擇後以固定順序輸出（zh 系優先），與插入順序無關
+        vm.ocrLanguages = ["ja-JP", "en-US"]
+        XCTAssertEqual(vm.ocrLanguageList, ["en-US", "ja-JP"])
+        vm.ocrLanguages = ["ko-KR"]
+        XCTAssertEqual(vm.ocrLanguageList, ["ko-KR"])
+        XCTAssertTrue(UserDefaults.standard.array(forKey: "ocrLanguages") as? [String] == ["ko-KR"])
+        vm.ocrLanguages = []
+        XCTAssertEqual(vm.ocrLanguageList.count, 3, "清空後應回落預設三語")
     }
 
     func testRecognizeEnglishText() throws {
