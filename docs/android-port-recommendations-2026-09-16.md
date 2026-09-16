@@ -1,5 +1,10 @@
 # 給 Android 版開發者的建議事項(AirScan Studio / mopria-android-scan-print)
 
+> **⚠️ 2026-09-16 驗證結果**(詳見 `android-recommendations-verification-2026-09-16.md`):
+> 對照 Android 版實際 codebase,**8 項中 7 項 Android 版早已正確實作,不成立**;
+> #1 絕對路徑部分成立(已優雅降級防護,建議 P3/backlog)。本文件應作為
+> 「跨平台設計檢核清單」歸檔,而非 Android 版的行動清單。
+
 - 日期:2026-09-16
 - 依據:iOS 版全專案 code review(`docs/code-review-2026-09-16.md`,29 項)
 - 範圍:僅收錄在兩版共用架構(文件庫持久化、eSCL 掃描流程、多頁 PDF 組裝、ML Kit OCR)下同樣適用的 8 項;iOS 專屬項(SwiftUI/UIKit、NavigationStack、UIGraphicsImageRenderer、@MainActor 語意等)已略過。
