@@ -571,10 +571,11 @@ struct DocumentsView: View {
 struct DocumentRow: View {
     let doc: ScannedDocument
     @ObservedObject var scanVM: ScanViewModel
+    @State private var thumbnail: UIImage?
 
     var body: some View {
         HStack(spacing: 12) {
-            thumbnail
+            thumbnailView
             VStack(alignment: .leading, spacing: 2) {
                 Text(doc.name).font(.subheadline.weight(.medium))
                 Text("\(doc.pageCount) 頁 · \(doc.settings.resolution.displayName) · \(doc.settings.colorMode.displayName)")
@@ -587,21 +588,68 @@ struct DocumentRow: View {
             Spacer()
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
         }
+        .task(id: doc.fileURL) {
+            // review #10：縮圖脫離主執行緒 + NSCache 快取。
+            // 舊版每次 body 重繪都同步 PDFDocument(url:)/Data(contentsOf:) 全檔 parse（OCR 原地替換後檔案更大，滑列表卡幀）。
+            thumbnail = await DocumentThumbnailLoader.cachedThumbnail(for: doc.fileURL)
+        }
     }
 
-    @ViewBuilder private var thumbnail: some View {
-        if doc.fileURL.pathExtension == "pdf",
-           let page = PDFDocument(url: doc.fileURL)?.page(at: 0) {
-            Image(uiImage: page.thumbnail(of: CGSize(width: 120, height: 160), for: .mediaBox))
-                .resizable().scaledToFill()
-                .frame(width: 48, height: 64).clipShape(RoundedRectangle(cornerRadius: 6))
-        } else if let img = UIImage(data: (try? Data(contentsOf: doc.fileURL)) ?? Data()) {
-            Image(uiImage: img).resizable().scaledToFill()
+    @ViewBuilder private var thumbnailView: some View {
+        if let thumbnail {
+            Image(uiImage: thumbnail).resizable().scaledToFill()
                 .frame(width: 48, height: 64).clipShape(RoundedRectangle(cornerRadius: 6))
         } else {
             RoundedRectangle(cornerRadius: 6).fill(Color.lavenderCard)
                 .frame(width: 48, height: 64)
                 .overlay(Image(systemName: "doc").foregroundColor(.secondary))
+        }
+    }
+}
+
+/// 縮圖快取（review #10）：static NSCache — 跨 row / 跨重繪共用，
+/// 同一 URL 不重複 parse。OCR 原地替換後可呼叫 invalidate 以更新縮圖。
+final class DocumentThumbnailCache {
+    static let shared = DocumentThumbnailCache()
+    private let cache = NSCache<NSString, UIImage>()
+    private init() {
+        cache.countLimit = 200
+    }
+    func object(forKey key: NSString) -> UIImage? { cache.object(forKey: key) }
+    func setObject(_ obj: UIImage, forKey key: NSString) { cache.setObject(obj, forKey: key) }
+    func removeAllObjects() { cache.removeAllObjects() }
+}
+
+/// 縮圖背景產生：PDF 取首頁 page.thumbnail；圖檔直接解碼（48×64 pt 只需小圖，
+/// JPEG 直接全解碼已足夠快且僅在背景執行一次；產物進快取）。
+enum DocumentThumbnailLoader {
+    /// 快取優先（DocumentRow.task 使用）：命中回快取 instance（不重 parse），
+    /// miss 才背景產生並入快取。測試直接驗證此路徑（review #10）。
+    @MainActor
+    static func cachedThumbnail(for url: URL) async -> UIImage? {
+        if let cached = DocumentThumbnailCache.shared.object(forKey: url.path as NSString) {
+            return cached
+        }
+        guard let img = await thumbnail(for: url) else { return nil }
+        DocumentThumbnailCache.shared.setObject(img, forKey: url.path as NSString)
+        return img
+    }
+
+    static func thumbnail(for url: URL) async -> UIImage? {
+        // 離開 MainActor（caller 是 SwiftUI .task，仍在 MainActor）
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let img: UIImage?
+                if url.pathExtension.lowercased() == "pdf" {
+                    img = PDFDocument(url: url)?.page(at: 0)?
+                        .thumbnail(of: CGSize(width: 240, height: 320), for: .mediaBox)
+                } else if let data = try? Data(contentsOf: url) {
+                    img = UIImage(data: data)
+                } else {
+                    img = nil
+                }
+                cont.resume(returning: img)
+            }
         }
     }
 }
@@ -734,13 +782,51 @@ enum OCRTextStore {
 
 struct PDFKitView: UIViewRepresentable {
     let url: URL
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeUIView(context: Context) -> PDFView {
         let v = PDFView()
         v.autoScales = true
         v.document = PDFDocument(url: url)
+        context.coordinator.loadedStamp = PDFFileStamp.of(url: url)
         return v
     }
-    func updateUIView(_ uiView: PDFView, context: Context) {}
+
+    func updateUIView(_ uiView: PDFView, context: Context) {
+        // review #26：OCR 原地替換 PDF（replaceItemAt）後 URL 不變、內容已變，
+        // 已開啟的預覽永遠顯示舊版。比對檔案特徵（mtime+size），確實變了才重載，
+        // 檔案沒變時直接 return（避免每次重繪都重新 parse → 無限重繪）。
+        let stamp = PDFFileStamp.of(url: url)
+        guard stamp != context.coordinator.loadedStamp else { return }
+        if let newDoc = PDFDocument(url: url) {
+            uiView.document = newDoc
+            context.coordinator.loadedStamp = stamp
+        } else if stamp == nil {
+            // 檔案已不存在（例如被刪除）：清空預覽，不顯示舊內容
+            uiView.document = nil
+            context.coordinator.loadedStamp = nil
+        }
+        // 檔案存在但 parse 失敗（暫態）：保留舊內容，下次 updateUIView 再試
+    }
+
+    final class Coordinator {
+        /// 目前 PDFView 已載入內容的檔案特徵
+        var loadedStamp: PDFFileStamp?
+    }
+}
+
+/// 檔案當下特徵（mtime + size）：供 PDFKitView 偵測原地替換；檔案不存在回 nil。
+struct PDFFileStamp: Equatable {
+    let modificationDate: Date
+    let size: Int64
+
+    static func of(url: URL) -> PDFFileStamp? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let mod = attrs[.modificationDate] as? Date,
+              let size = attrs[.size] as? NSNumber else { return nil }
+        return PDFFileStamp(modificationDate: mod, size: size.int64Value)
+    }
 }
 
 // MARK: - Print (AirPrint)
@@ -750,7 +836,7 @@ struct PrintView: View {
 
     var body: some View {
         List {
-            Section("掃描文件") {
+            Section {
                 ForEach(scanVM.documents) { doc in
                     Button {
                         printDocument(url: doc.fileURL, name: doc.name)
@@ -763,13 +849,8 @@ struct PrintView: View {
                         }
                     }
                 }
-            }
-            Section {
-                Button {
-                    pickAndPrintFromFiles()
-                } label: {
-                    Label("從檔案選擇…", systemImage: "folder")
-                }
+            } header: {
+                Text("掃描文件")
             } footer: {
                 Text("使用系統 AirPrint 選擇印表機、份數與紙張。")
             }
@@ -786,14 +867,6 @@ struct PrintView: View {
         controller.printInfo = info
         controller.printingItem = url as NSURL
         controller.present(animated: true)
-    }
-
-    private func pickAndPrintFromFiles() {
-        // Simplified: the picker integration lands in the next milestone.
-        // For now, direct print of latest doc.
-        if let latest = scanVM.documents.first {
-            printDocument(url: latest.fileURL, name: latest.name)
-        }
     }
 }
 

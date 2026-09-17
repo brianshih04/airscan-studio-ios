@@ -329,4 +329,77 @@ final class ReviewFixTests: XCTestCase {
         XCTAssertEqual(px.width, 2480, accuracy: 2.0, "頁面像素寬應為 2480（scale=1），got \(px.width)")
         XCTAssertEqual(px.height, 3508, accuracy: 2.0, "頁面像素高應為 3508（scale=1），got \(px.height)")
     }
+
+    // MARK: - Round 3（docs/rereview-2026-09-16.md P2 三項）
+
+    /// #26：PDFFileStamp（mtime+size）— 檔案原地替換後 stamp 必須改變、
+    /// 未變時相同、不存在回 nil。PDFKitView.updateUIView 以此判斷是否重載。
+    func testPDFFileStampReflectsFileReplacement() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("r3-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("doc.pdf")
+
+        // 不存在 → nil
+        XCTAssertNil(PDFFileStamp.of(url: url), "檔案不存在時 stamp 應為 nil")
+
+        // 寫入 → stamp 有值；未再寫入前連續讀取相同
+        try Data("%PDF-1.4 first".utf8).write(to: url)
+        let s1 = try XCTUnwrap(PDFFileStamp.of(url: url))
+        XCTAssertEqual(PDFFileStamp.of(url: url), s1, "檔案未變時 stamp 應相等")
+
+        // 原地替換（OCR replaceItemAt 情境：URL 不變、內容/大小變）→ stamp 必須不同
+        try Data("%PDF-1.4 second with more content (larger)".utf8).write(to: url)
+        let s2 = try XCTUnwrap(PDFFileStamp.of(url: url))
+        XCTAssertNotEqual(s2, s1, "原地替換後 stamp 應改變（觸發 PDFKitView 重載）")
+    }
+
+    /// #10：縮圖快取 — 同一 URL 兩次請求回傳同一 cached instance（不重複 parse）
+    func testThumbnailCacheReturnsSameInstanceForSameURL() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("r3-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // 產生一張小圖（縮圖路徑吃圖檔分支）
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40), format: format)
+        let img = renderer.image { ctx in
+            UIColor.systemBlue.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 40, height: 40))
+        }
+        let url = dir.appendingPathComponent("thumb.jpg")
+        try XCTUnwrap(img.jpegData(compressionQuality: 0.8)).write(to: url)
+
+        // 快取隔離：清掉再驗（static shared cache）
+        DocumentThumbnailCache.shared.removeAllObjects()
+        let a = await DocumentThumbnailLoader.cachedThumbnail(for: url)
+        let b = await DocumentThumbnailLoader.cachedThumbnail(for: url)
+        XCTAssertNotNil(a, "圖檔應產生縮圖")
+        XCTAssertTrue(a === b, "同一 URL 兩次請求應回傳同一 cached instance（不重複 parse）")
+        XCTAssertTrue(DocumentThumbnailCache.shared.object(forKey: url.path as NSString) === a,
+                      "第二次請求應命中快取（object === 首次結果）")
+
+        // 不同 URL → 不同 instance（快取 key 正確，不誤撞）
+        let url2 = dir.appendingPathComponent("thumb2.jpg")
+        try XCTUnwrap(img.jpegData(compressionQuality: 0.8)).write(to: url2)
+        let c = await DocumentThumbnailLoader.cachedThumbnail(for: url2)
+        XCTAssertNotNil(c)
+        XCTAssertTrue(c !== a, "不同 URL 應產生不同 instance")
+    }
+
+    /// #10：縮圖產生脫離主執行緒路徑可用（PDF 分支：mock PDF 首頁可出縮圖）
+    func testThumbnailLoaderHandlesPDF() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("r3-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("mock.pdf")
+        var s = ScanSettings()
+        s.source = .adf
+        _ = try MockScanGenerator.generatePDF(settings: s, pageCount: 1, to: url)
+
+        DocumentThumbnailCache.shared.removeAllObjects()
+        let thumb = await DocumentThumbnailLoader.cachedThumbnail(for: url)
+        XCTAssertNotNil(thumb, "PDF 首頁應能產生縮圖")
+    }
 }

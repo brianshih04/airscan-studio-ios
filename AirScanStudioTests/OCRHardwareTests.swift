@@ -13,7 +13,7 @@ final class OCRHardwareTests: XCTestCase {
             vm.ocrEnabled = true
             vm.settings.source = .adf
             vm.settings.paperSize = .a4   // 明確 A4：避免殘留設定（如 5x7）影響 ADF 進紙行為
-            vm.adfPageLimit = 2           // 必須 == ADF 實際放紙張數；job 結束會整疊退紙
+            vm.adfPageLimit = 10          // 必須 == ADF 實際放紙張數；job 結束會整疊退紙
             vm.addManual(host: host)
         }
         try await vm.startScanForTesting(source: .adf)
