@@ -19,6 +19,19 @@
 | Brother MFC-L2715DW | 10.1.121.175:80 | 7,414 | 6,816 字可搜尋 | ✅ 2 頁 | ~34 秒 |
 | HP LaserJet Pro MFP 3104fdw | 10.1.121.182:8080 | 7,870 | 6,814 字可搜尋 | ✅ 2 頁 | ~33 秒 |
 
+## 10 頁壓力測試（2026-09-17，修復後 pipeline，Brother ADF 單一 job `NumberOfPages=10`）
+
+| 項目 | 結果 |
+|---|---|
+| 掃描+OCR 全流程 | ✅ 105.6 秒（10 頁連續進紙、同一 job、無中途退紙） |
+| OCR 字數 | 13,382 字繁中（財務報表類文件，表格數字正確） |
+| searchable PDF | ✅ 10 頁完整保留、3.0 MB、p0 866 字文字層 |
+| 記憶體修復驗證 | ✅ `writePDF` 串流路徑峰值 = 單頁 ~35MB（舊實作同量級駐留 ~1.4GB 必被 jetsam 殺） |
+
+此輪同時實機驗證 ADF 行為約束：**job 結束（含逾時/中止）時 ADF 整疊退紙**，故
+`adfPageLimit` 必須等於實際放紙張數；測試斷言已改為單頁 .jpg / 多頁 .pdf 彈性處理
+（`OCRHardwareTests`）。
+
 - `SCANUSED` 斷言確認實際使用的掃描器端點（非 discovery 靜默接管）
 - HP 辨識品質略低於 Brother（該機掃描器對焦特性），文字層與搜尋功能不受影響
 - OCR 於掃描完成後背景執行（`Task.detached` priority .utility），UI 不阻塞
