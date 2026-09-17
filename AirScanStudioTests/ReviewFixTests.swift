@@ -122,4 +122,211 @@ final class ReviewFixTests: XCTestCase {
     func testCompletedPhaseIsTerminalValue() {
         XCTAssertEqual(ScanJobPhase(rawValue: "Completed"), .completed)
     }
+
+    // MARK: - Round 2（docs/rereview-2026-09-16.md 建議 4 項）
+
+    /// #5：selectedScanner 選擇優先序 — 使用者明確選擇 > manual 霸佔 > 第一台
+    @MainActor
+    func testSelectedScannerExplicitChoiceBeatsManualHijack() {
+        let vm = ScanViewModel()
+        let hp = DiscoveredScanner(id: "HP LaserJet [aa]", name: "HP", host: "10.1.121.182", port: 8080, isSecure: false)
+        let brother = DiscoveredScanner(id: "manual-10.1.121.175:80", name: "Brother", host: "10.1.121.175", port: 80, isSecure: false)
+        vm.browser.scanners = [hp, brother]
+
+        // 1) 無明確選擇：manual 仍優先（測試 pin 意圖保留）
+        XCTAssertEqual(vm.selectedScanner?.id, brother.id, "無選擇時 manual 裝置優先")
+
+        // 2) 使用者明確選 HP → HP 贏（manual 不再霸佔）
+        vm.selectedScannerID = hp.id
+        XCTAssertEqual(vm.selectedScanner?.id, hp.id, "明確選擇應優先於 manual 霸佔")
+
+        // 3) 選擇的裝置已移除 → 回退 manual
+        vm.selectedScannerID = "gone"
+        XCTAssertEqual(vm.selectedScanner?.id, brother.id, "選擇失效時回退 manual")
+
+        // 4) 只剩 Bonjour 裝置 → 回退第一台
+        vm.browser.scanners = [hp]
+        vm.selectedScannerID = nil
+        XCTAssertEqual(vm.selectedScanner?.id, hp.id)
+    }
+
+    /// #22：port 1-65535 範圍驗證
+    func testManualHostPortValidation() {
+        // 合法
+        XCTAssertEqual(ScanViewModel.validateManualHost("192.168.1.50"), .valid(host: "192.168.1.50", port: 80))
+        XCTAssertEqual(ScanViewModel.validateManualHost("192.168.1.50:8080"), .valid(host: "192.168.1.50", port: 8080))
+        XCTAssertEqual(ScanViewModel.validateManualHost("10.1.121.182:1"), .valid(host: "10.1.121.182", port: 1))
+        XCTAssertEqual(ScanViewModel.validateManualHost("10.1.121.182:65535"), .valid(host: "10.1.121.182", port: 65535))
+        // 邊界外
+        XCTAssertEqual(ScanViewModel.validateManualHost("10.1.121.182:0"), .invalid)
+        XCTAssertEqual(ScanViewModel.validateManualHost("10.1.121.182:65536"), .invalid)
+        XCTAssertEqual(ScanViewModel.validateManualHost("10.1.121.182:-1"), .invalid)
+        XCTAssertEqual(ScanViewModel.validateManualHost("10.1.121.182:abc"), .invalid)
+        // 格式錯誤
+        XCTAssertEqual(ScanViewModel.validateManualHost(""), .invalid)
+        XCTAssertEqual(ScanViewModel.validateManualHost("not an ip"), .invalid)
+        XCTAssertEqual(ScanViewModel.validateManualHost("10.1.121.182:80:extra"), .invalid)
+        XCTAssertEqual(ScanViewModel.validateManualHost("10.1.121.182:"), .invalid)
+    }
+
+    /// #22：無效輸入不加入；manual 裝置可移除，移除後選擇回退
+    @MainActor
+    func testAddManualRejectsInvalidAndRemoveManualFallsBack() {
+        let vm = ScanViewModel()
+        // 無效 port → 不加入
+        XCTAssertFalse(vm.addManual(host: "10.1.121.182:99999"))
+        XCTAssertTrue(vm.discovered.isEmpty, "無效輸入不應加入任何裝置")
+
+        // 有效 → 加入且選中
+        XCTAssertTrue(vm.addManual(host: "10.1.121.175"))
+        XCTAssertEqual(vm.selectedScanner?.id, "manual-10.1.121.175:80")
+
+        // 再加一台 Bonjour 裝置，明確選它
+        let hp = DiscoveredScanner(id: "HP LaserJet [aa]", name: "HP", host: "10.1.121.182", port: 8080, isSecure: false)
+        vm.browser.scanners = [hp] + vm.browser.scanners
+        vm.selectedScannerID = hp.id
+        XCTAssertEqual(vm.selectedScanner?.id, hp.id)
+
+        // 移除 manual 裝置：不在清單、選擇不受影響（目前選的是 HP）
+        let manual = vm.discovered.first { $0.id.hasPrefix("manual-") }!
+        vm.removeManual(scanner: manual)
+        XCTAssertFalse(vm.discovered.contains { $0.id == manual.id })
+        XCTAssertEqual(vm.selectedScanner?.id, hp.id)
+
+        // 移除目前選中的 manual（先重建情境）：選擇應回退到第一台剩餘裝置
+        XCTAssertTrue(vm.addManual(host: "10.1.121.175"))
+        vm.selectedScannerID = "manual-10.1.121.175:80"
+        let manual2 = vm.discovered.first { $0.id.hasPrefix("manual-") }!
+        vm.removeManual(scanner: manual2)
+        XCTAssertEqual(vm.selectedScannerID, hp.id, "刪除選中的 manual 後應回退第一台剩餘裝置")
+
+        // 非 manual 裝置不可透過 removeManual 移除
+        vm.removeManual(scanner: hp)
+        XCTAssertTrue(vm.discovered.contains { $0.id == hp.id })
+    }
+
+    /// #8：錯誤路徑 job 清理 — 非取消錯誤會觸發清理、取消/已清理時跳過（不雙 DELETE）
+    @MainActor
+    func testCleanupTrackedJobSkipLogic() async throws {
+        let vm = ScanViewModel()
+        let client = ESCLClient(scanner: DiscoveredScanner(id: "t", name: "t", host: "127.0.0.1", port: 1, isSecure: false))
+        let jobURL = URL(string: "http://127.0.0.1:1/eSCL/ScanJobs/1")!
+
+        // 1) 非取消 + activeJobURL 相符 → 應清理（背景 detached DELETE）
+        vm.activeJobURL = jobURL
+        vm.cleanupTrackedJob(client: client, jobURL: jobURL, cancelled: false)
+        try await Task.sleep(nanoseconds: 300_000_000) // 等 detached task 飛出
+        XCTAssertNil(vm.activeJobURL, "清理後 activeJobURL 應清 nil")
+
+        // 2) 已取消 → 跳過（cancelScan 已清理）：activeJobURL 保持不變
+        vm.activeJobURL = jobURL
+        vm.cleanupTrackedJob(client: client, jobURL: jobURL, cancelled: true)
+        XCTAssertEqual(vm.activeJobURL, jobURL, "取消路徑應跳過（cancelScan 已處理）")
+
+        // 3) cancelScan 已先行清理（activeJobURL 已清 nil）→ 跳過，不雙 DELETE
+        vm.activeJobURL = nil
+        vm.cleanupTrackedJob(client: client, jobURL: jobURL, cancelled: false)
+        XCTAssertNil(vm.activeJobURL, "cancelScan 已清理過的 job 不應重複 DELETE")
+    }
+
+    /// #8（原始碼路徑防回歸）：runRealScan 錯誤路徑不殘留追蹤狀態。
+    /// 以本機不可達 port 跑真實掃描（fetchCapabilities 拋非取消錯誤）：
+    /// createJob 未達、無 job 產生 → 聚焦「不殘留 activeJobURL/activeESCLClient、流程正確拋錯」，
+    /// defer 清理呼叫路徑由 testCleanupTrackedJobSkipLogic 覆蓋。
+    @MainActor
+    func testRealScanErrorPathLeavesNoTrackedJob() async throws {
+        let vm = ScanViewModel()
+        vm.mode = .real
+        vm.flatbedPromptEnabled = false
+        // 127.0.0.1:1 — 本機 connection refused，立即失敗（不依賴網路逾時）
+        XCTAssertTrue(vm.addManual(host: "127.0.0.1:1"))
+        UserDefaults.standard.removeObject(forKey: "manualScannerHost")
+
+        do {
+            try await vm.startScanForTesting(source: .platen)
+            XCTFail("不可達掃描器應拋錯")
+        } catch {
+            // 預期錯誤
+        }
+        XCTAssertNil(vm.activeJobURL, "錯誤路徑收尾後不應殘留 activeJobURL")
+        XCTAssertNil(vm.activeESCLClient)
+    }
+
+    /// B1：文件刪除後 OCR 不寫回 — deleteDocument 記錄路徑、清理 outcome，
+    /// runOCRNow 對已刪文件不再受理
+    @MainActor
+    func testDeletedDocumentOcrDiscarded() throws {
+        let vm = ScanViewModel()
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("b1-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("scan_b1.jpg")
+        try Data("fakejpg".utf8).write(to: url)
+        let doc = ScannedDocument(name: "B1", fileURL: url, pageCount: 1, settings: .init())
+        vm.documents = [doc]
+        vm.ocrOutcome[url.path] = .hasText(chars: 10)
+        vm.ocrRunningPaths = [url.path]
+
+        vm.deleteDocument(doc)
+
+        // 磁碟與清單已清
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertTrue(vm.documents.isEmpty)
+        // B1 防護狀態
+        XCTAssertTrue(vm.deletedDocumentPaths.contains(url.path), "deleteDocument 應記錄已刪路徑")
+        XCTAssertNil(vm.ocrOutcome[url.path], "deleteDocument 應清 ocrOutcome entry")
+        XCTAssertFalse(vm.ocrRunningPaths.contains(url.path), "deleteDocument 應清 ocrRunningPaths entry")
+
+        // runOCRNow 對已刪文件不再受理
+        vm.runOCRNow(for: doc)
+        XCTAssertFalse(vm.ocrRunningPaths.contains(url.path), "已刪文件不應重新啟動 OCR")
+    }
+
+    /// B1（落地層）：OCRService 對「辨識前已被刪除」的來源不寫任何產物
+    func testOcrProcessDeletedSourceWritesNothing() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("b1-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("gone.jpg")
+        // 來源不存在 → 不應拋錯、不寫 txt、不復活任何檔案
+        let result = try OCRService.processDocument(at: url)
+        XCTAssertFalse(result.textLayerWritten)
+        XCTAssertTrue(result.fullText.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "不得把產物寫回已刪路徑（復活）")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: result.textFileURL.path), "不得寫出 .txt")
+        // 同目錄不應殘留任何 tmp/孤兒檔
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        XCTAssertTrue(leftovers.isEmpty, "不得殘留孤兒檔，got \(leftovers)")
+    }
+
+    /// B3：mock PDF 尺寸正確（mediaBox 非 Letter、等於設定頁尺寸）且頁數正確
+    func testMockPDFCorrectMediaBoxAndPageCount() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("b3-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("mock.pdf")
+
+        var s = ScanSettings()   // A4 = 2480×3508（1/300 inch 單位，與 dpi 無關）
+        s.source = .adf
+        let written = try MockScanGenerator.generatePDF(settings: s, pageCount: 3, to: url)
+
+        XCTAssertEqual(written, 3, "應寫入 3 頁")
+        let pdf = try XCTUnwrap(PDFDocument(url: url))
+        XCTAssertEqual(pdf.pageCount, 3, "頁數應為 3")
+        for i in 0..<3 {
+            let box = try XCTUnwrap(pdf.page(at: i)).bounds(for: .mediaBox)
+            XCTAssertEqual(box.width, 2480, accuracy: 1.0, "第 \(i) 頁 mediaBox 寬應為 2480（非 Letter 612）")
+            XCTAssertEqual(box.height, 3508, accuracy: 1.0, "第 \(i) 頁 mediaBox 高應為 3508（非 Letter 792）")
+        }
+    }
+
+    /// B3：generatePage 不再被螢幕 scale 放大（2480×3508 就是真的 2480×3508）
+    func testMockPageNotScaledByScreen() throws {
+        let data = MockScanGenerator.generatePage(settings: ScanSettings(), pageIndex: 0, totalPages: 1)
+        let img = try XCTUnwrap(UIImage(data: data))
+        let px = img.cgImage.map { CGSize(width: $0.width, height: $0.height) }
+            ?? CGSize(width: img.size.width * img.scale, height: img.size.height * img.scale)
+        XCTAssertEqual(px.width, 2480, accuracy: 2.0, "頁面像素寬應為 2480（scale=1），got \(px.width)")
+        XCTAssertEqual(px.height, 3508, accuracy: 2.0, "頁面像素高應為 3508（scale=1），got \(px.height)")
+    }
 }

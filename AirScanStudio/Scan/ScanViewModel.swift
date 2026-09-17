@@ -62,13 +62,17 @@ final class ScanViewModel: ObservableObject {
     /// OCR 結果狀態（路徑 → outcome），session 內有效；文字本身落在磁碟 <文件>.txt
     enum OcrOutcome: Equatable { case hasText(chars: Int), noText, failed(String) }
     @Published var ocrOutcome: [String: OcrOutcome] = [:]
+    /// 已刪除文件路徑（review B1）：OCR 背景任務完成回呼據此丟棄產物，
+    /// 不把 PDF/txt 寫回已刪路徑（孤兒復活防護）
+    var deletedDocumentPaths: Set<String> = []
     /// 目前逐頁累積的頁數（供 UI 顯示）
     @Published var flatbedPageCount = 0
     /// 進行中的掃描工作（供取消）
     private var scanTask: Task<Void, Never>?
-    /// 真實掃描的底層工作（供 cancelScan 清理 eSCL job）
-    private var activeESCLClient: ESCLClient?
-    private var activeJobURL: URL?
+    /// 真實掃描的底層工作（供 cancelScan 清理 eSCL job）。
+    /// internal：單元測試驗證錯誤路徑 job 清理（review #8）需要觀察。
+    var activeESCLClient: ESCLClient?
+    var activeJobURL: URL?
     private var flatbedContinuation: CheckedContinuation<FlatbedChoice, Error>?
     var isScanning: Bool { scanTask != nil }
 
@@ -78,12 +82,18 @@ final class ScanViewModel: ObservableObject {
     var isBrowsing: Bool { browser.isBrowsing }
     @Published var selectedScannerID: String?
     var selectedScanner: DiscoveredScanner? {
-        // Pinned manual scanner wins over auto-discovered (prevents discovered HP hijacking
-        // when user explicitly pinned a device for testing)
+        // 使用者明確選擇（含手動加入）優先（review #5）：
+        // 舊行為「manual- 一律霸佔」導致加入 manual 裝置後，Bonjour 探索到的裝置
+        // 同 session 內永遠選不到（雙機工作流必踩）。
+        if let id = selectedScannerID,
+           let picked = discovered.first(where: { $0.id == id }) {
+            return picked
+        }
+        // 無明確選擇：manual 裝置次之（明確測試意圖），最後退回第一台探索結果
         if let manual = discovered.first(where: { $0.id.hasPrefix("manual-") }) {
             return manual
         }
-        return discovered.first(where: { $0.id == selectedScannerID }) ?? discovered.first
+        return discovered.first
     }
 
     let browser = ScannerBrowser()
@@ -119,15 +129,45 @@ final class ScanViewModel: ObservableObject {
         }
     }
 
-    func addManual(host: String) {
-        // Accept "ip" or "ip:port"; validate to avoid index-out-of-range
-        let parts = host.split(separator: ":")
+    /// 手動輸入驗證結果：ip + 合法 port（1-65535，預設 80）
+    enum ManualHostValidation: Equatable {
+        case valid(host: String, port: Int)
+        case invalid
+    }
+
+    /// 解析手動輸入的 "ip" / "ip:port"（review #22）：
+    /// port 加入 1-65535 範圍檢查；不合法時 UI 顯示錯誤、不加入。
+    /// nonisolated：純函式（字串解析），供任何執行緒/單元測試直接呼叫。
+    nonisolated static func validateManualHost(_ input: String) -> ManualHostValidation {
+        let parts = input.split(separator: ":", omittingEmptySubsequences: false)
         guard let first = parts.first, !first.isEmpty,
-              first.allSatisfy({ $0.isNumber || $0 == "." }) else { return }
+              first.allSatisfy({ $0.isNumber || $0 == "." }) else { return .invalid }
         let ip = String(first)
-        let port = parts.count > 1 ? Int(parts[1]) ?? 80 : 80
+        if parts.count > 2 { return .invalid }
+        if parts.count == 2 {
+            guard let p = Int(parts[1]), (1...65_535).contains(p) else { return .invalid }
+            return .valid(host: ip, port: p)
+        }
+        return .valid(host: ip, port: 80)
+    }
+
+    /// 手動加入掃描器。回傳是否成功（輸入無效時 false，不加入）。
+    @discardableResult
+    func addManual(host: String) -> Bool {
+        guard case .valid(let ip, let port) = Self.validateManualHost(host) else { return false }
         browser.addManualScanner(host: ip, port: port)
         selectedScannerID = "manual-\(ip):\(port)"
+        return true
+    }
+
+    /// 移除手動加入的裝置（review #22）：滑動刪除用。
+    /// 若刪的是目前選擇，回退到第一台剩餘裝置。
+    func removeManual(scanner: DiscoveredScanner) {
+        guard scanner.id.hasPrefix("manual-") else { return }
+        browser.removeScanner(id: scanner.id)
+        if selectedScannerID == scanner.id {
+            selectedScannerID = discovered.first?.id
+        }
     }
 
     // MARK: - Scan
@@ -259,7 +299,24 @@ final class ScanViewModel: ObservableObject {
             numberOfPages: sendPageLimit ? adfPageLimit : nil,
             duplex: sendDuplex
         )
-        activeJobURL = jobURL
+        // 錯誤路徑 job 清理（review #8）：createJob 成功後任何拋出（含取消）都會走到 defer，
+        // 確保 job 不殘留掃描器端（HP 已知會因 Aborted job 堆積 wedge）。
+        // 冪等設計：主路徑／flatbed 各頁清理後把 cleanedJobURL 歸 nil → defer 不重跑；
+        // cancelScan 已先行清理（activeJobURL 清 nil）→ cleanupTrackedJob 跳過，不雙 DELETE；
+        // 取消（CancellationError）同樣由 cancelScan 處理 → 跳過。
+        var cleanedJobURL: URL?
+        defer {
+            if let leftover = cleanedJobURL {
+                cleanedJobURL = nil
+                cleanupTrackedJob(client: client, jobURL: leftover, cancelled: Task.isCancelled)
+            }
+        }
+        func track(_ url: URL) -> URL {
+            cleanedJobURL = url
+            activeJobURL = url
+            return url
+        }
+        track(jobURL)
         // Pull pages until the job ends or the ADF page limit is reached.
         // Brother serves NextDocument while Pending; HP serves after Completed.
         let maxPages = settings.source == .adf ? adfPageLimit : 1
@@ -276,6 +333,7 @@ final class ScanViewModel: ObservableObject {
             }
         }
         activeJobURL = nil
+        cleanedJobURL = nil
         await client.cleanupJob(jobURL)
         try Task.checkCancellation()
         guard !pages.isEmpty else {
@@ -291,14 +349,15 @@ final class ScanViewModel: ObservableObject {
                 // 掃下一頁：建立新 job
                 try Task.checkCancellation()
                 phase = .scanning(page: allPages.count)
-                let nextJobURL = try await client.createJob(settings, namespace: caps.scanNamespace)
-                activeJobURL = nextJobURL
+                let nextJobURL = track(try await client.createJob(settings, namespace: caps.scanNamespace))
                 guard let data = try await client.pullPage(jobURL: nextJobURL) else {
+                    cleanedJobURL = nil
                     await client.cleanupJob(nextJobURL)
                     break // 掃描器未回傳影像：以已累積頁數完成
                 }
                 allPages.append(data)
                 activeJobURL = nil
+                cleanedJobURL = nil
                 await client.cleanupJob(nextJobURL)
             }
             pages = allPages
@@ -368,6 +427,25 @@ final class ScanViewModel: ObservableObject {
 
     // MARK: - OCR（backlog 階段一/二）
 
+    /// 錯誤路徑的 eSCL job 清理（review #8）：
+    /// - Task 已取消（cancelScan 已做 detached cleanupJob）→ 跳過，不雙 DELETE
+    /// - cancelScan 已先行清理（activeJobURL 清 nil）→ 跳過
+    /// - 其餘（pullPage/createJob 拋非取消錯誤）→ 背景 DELETE，避免 job 殘留掃描器端
+    /// internal 供單元測試 spy 驗證呼叫路徑
+    func cleanupTrackedJob(client: ESCLClient, jobURL: URL, cancelled: Bool) {
+        if cancelled {
+            NSLog("[AirScan] defer cleanup skipped (cancelled; cancelScan already cleaned)")
+            return
+        }
+        guard activeJobURL == jobURL else {
+            NSLog("[AirScan] defer cleanup skipped (already cleaned)")
+            return
+        }
+        activeJobURL = nil
+        NSLog("[AirScan] error path: cleaning up leftover eSCL job")
+        Task.detached { await client.cleanupJob(jobURL) }
+    }
+
     /// 掃描完成後背景執行 OCR；寫 <文件>.txt，PDF 疊不可見文字層（原地替換）。
     private func runOCRAfterScan(_ doc: ScannedDocument) {
         guard ocrEnabled else { return }
@@ -379,24 +457,36 @@ final class ScanViewModel: ObservableObject {
                 let result = try OCRService.processDocument(at: doc.fileURL, languages: languages)
                 await MainActor.run { [weak self] in
                     self?.ocrRunningPaths.remove(path)
+                    // OCR 刪除復活防護（review B1）：文件在辨識期間被刪除 →
+                    // 丟棄產物，不寫回已刪路徑（PDF 原地替換與 .txt 已由 OCRService 對
+                    // 不存在來源改為 no-op，這裡不再記 outcome）
+                    guard let self, !self.deletedDocumentPaths.contains(path),
+                          self.documents.contains(where: { $0.fileURL.path == path }) else {
+                        NSLog("[AirScan] OCR result discarded (document deleted during OCR)")
+                        return
+                    }
                     if result.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        self?.ocrOutcome[path] = .noText
+                        self.ocrOutcome[path] = .noText
                     } else {
-                        self?.ocrOutcome[path] = .hasText(chars: result.fullText.count)
+                        self.ocrOutcome[path] = .hasText(chars: result.fullText.count)
                     }
                 }
             } catch {
                 await MainActor.run { [weak self] in
                     self?.ocrRunningPaths.remove(path)
-                    self?.ocrOutcome[path] = .failed(error.localizedDescription)
+                    if let self, !self.deletedDocumentPaths.contains(path) {
+                        self.ocrOutcome[path] = .failed(error.localizedDescription)
+                    }
                 }
             }
         }
     }
 
     /// 文件詳情頁「重新辨識」：OCR 未自動跑過（開關沒開）或想重跑時使用。
+    /// 已刪除的文件不再受理（review B1）。
     func runOCRNow(for doc: ScannedDocument) {
-        guard !ocrRunningPaths.contains(doc.fileURL.path) else { return }
+        guard !ocrRunningPaths.contains(doc.fileURL.path),
+              !deletedDocumentPaths.contains(doc.fileURL.path) else { return }
         runOCRAfterScan(doc)
     }
 
@@ -491,12 +581,18 @@ final class ScanViewModel: ObservableObject {
     }
 
     func deleteDocument(_ doc: ScannedDocument) {
+        let path = doc.fileURL.path
         try? FileManager.default.removeItem(at: doc.fileURL)
         // 一併刪除 OCR 文字 sidecar，避免 .txt 孤兒留在磁碟（review #14）
         let txtURL = doc.fileURL.deletingPathExtension().appendingPathExtension("txt")
         try? FileManager.default.removeItem(at: txtURL)
         documents.removeAll { $0.id == doc.id }
         persistDocuments()
+        // OCR 刪除復活防護（review B1）：記錄已刪路徑、清 ocrOutcome/ocrRunningPaths entry，
+        // 讓進行中/剛完成的 OCR 背景任務據此丟棄產物，不寫回已刪路徑
+        deletedDocumentPaths.insert(path)
+        ocrOutcome.removeValue(forKey: path)
+        ocrRunningPaths.remove(path)
     }
 
     static let dateFormatter: DateFormatter = {

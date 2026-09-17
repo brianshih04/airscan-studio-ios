@@ -1,17 +1,22 @@
 import Foundation
 import SwiftUI
 import PDFKit
+import UIKit
 
 /// Generates synthetic scan documents for Mock mode.
 /// Mirrors the Android app's MockScannerRepository: lets the whole flow
 /// (scan → document library → print) work without a physical device.
 enum MockScanGenerator {
     /// Renders an A4 page with a subtle paper texture + content blocks, returns JPEG data.
+    /// format.scale = 1（review B3）：預設 renderer 帶螢幕 scale（3x），2480×3508 的
+    /// 「模擬 A4 頁」會實際 render 成 7440×10524 bitmap（~313MB/頁），多頁直接炸記憶體。
     static func generatePage(settings: ScanSettings, pageIndex: Int, totalPages: Int) -> Data {
         let width = CGFloat(min(settings.widthPx, 2480))
         let height = CGFloat(min(settings.heightPx, 3508))
         let size = CGSize(width: width, height: height)
-        let renderer = UIGraphicsImageRenderer(size: size)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
         let image = renderer.image { ctx in
             // Paper background
             UIColor(white: 0.985, alpha: 1).setFill()
@@ -52,16 +57,18 @@ enum MockScanGenerator {
     }
 
     /// Builds a multi-page PDF from generated pages.
-    static func generatePDF(settings: ScanSettings, pageCount: Int, to url: URL) throws {
-        let pdf = PDFDocument()
+    /// 逐頁串流寫出（review B3）：不再 PDFPage(image:) 全頁解碼圖駐留
+    /// （50 頁 × 3x-scale bitmap = 15.6GB 峰值需求 → jetsam），改走與 real 掃描
+    /// 相同的 ScanViewModel.writePDF 串流路徑，每頁寫入即釋放，峰值 = 單頁。
+    /// 回傳實際寫入頁數。
+    @discardableResult
+    static func generatePDF(settings: ScanSettings, pageCount: Int, to url: URL) throws -> Int {
+        var pages: [Data] = []
+        pages.reserveCapacity(pageCount)
         for i in 0..<pageCount {
-            let data = generatePage(settings: settings, pageIndex: i, totalPages: pageCount)
-            if let img = UIImage(data: data) {
-                let page = PDFPage(image: img) ?? PDFPage()
-                pdf.insert(page, at: i)
-            }
+            pages.append(generatePage(settings: settings, pageIndex: i, totalPages: pageCount))
         }
-        try pdf.write(to: url)
+        return try ScanViewModel.writePDF(from: pages, to: url)
     }
 }
 

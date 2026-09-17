@@ -802,6 +802,7 @@ struct PrintView: View {
 struct DevicesView: View {
     @ObservedObject var scanVM: ScanViewModel
     @State private var manualHost = ""
+    @State private var manualInputError: String?
 
     var body: some View {
         List {
@@ -819,7 +820,8 @@ struct DevicesView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    ForEach(scanVM.discovered) { s in
+                    // manual 裝置改列在下方的「手動加入」區（可滑動刪除），這裡只列 Bonjour 探索結果
+                    ForEach(scanVM.discovered.filter { !$0.id.hasPrefix("manual-") }) { s in
                         Button {
                             scanVM.selectedScannerID = s.id
                         } label: {
@@ -848,10 +850,37 @@ struct DevicesView: View {
                         TextField("IP 位址，例如 192.168.1.50:8080", text: $manualHost)
                             .keyboardType(.decimalPad)
                         Button("加入") {
-                            scanVM.addManual(host: manualHost.trimmingCharacters(in: .whitespaces))
-                            manualHost = ""
+                            // port 範圍驗證（review #22）：無效輸入不加入、顯示錯誤
+                            if !scanVM.addManual(host: manualHost.trimmingCharacters(in: .whitespaces)) {
+                                manualInputError = "位址或連接埠無效（port 需 1-65535）"
+                            } else {
+                                manualInputError = nil
+                                manualHost = ""
+                            }
                         }
                         .disabled(manualHost.isEmpty)
+                    }
+                    if let err = manualInputError {
+                        Text(err).font(.caption).foregroundStyle(.red)
+                    }
+                    ForEach(scanVM.discovered.filter { $0.id.hasPrefix("manual-") }) { s in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(s.name).font(.subheadline.weight(.medium))
+                                Text("\(s.host):\(s.port) · HTTP")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if scanVM.selectedScanner?.id == s.id {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(Color.primaryAccent)
+                            }
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                scanVM.removeManual(scanner: s)
+                            } label: { Label("刪除", systemImage: "trash") }
+                        }
                     }
                 }
             }

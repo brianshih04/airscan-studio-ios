@@ -62,6 +62,14 @@ enum OCRService {
         var pageResults: [OCRPageResult] = []
         var sourcePDF: PDFDocument?
 
+        // 刪除復活防護（review B1）：來源在辨識前已被刪除 → 以空結果收場，
+        // 不寫 .txt、不重建 PDF（moveItem 會把 OCR 產物寫回已刪路徑 → 孤兒復活）
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            NSLog("[AirScan] OCR: source missing before recognition; discarding output for \(url.lastPathComponent)")
+            let txtURL = url.deletingPathExtension().appendingPathExtension("txt")
+            return OCRDocumentResult(textFileURL: txtURL, fullText: "", textLayerWritten: false)
+        }
+
         if ext == "pdf" {
             guard let pdf = PDFDocument(url: url) else { throw AppError("無法讀取 PDF 進行 OCR") }
             sourcePDF = pdf
@@ -69,10 +77,20 @@ enum OCRService {
                 guard let page = pdf.page(at: i) else { continue }
                 let rendered = renderPage(page, scale: 1)
                 pageResults.append(try recognize(in: rendered, languages: languages))
+                // 頁間檢查：辨識期間來源被刪除 → 中止，不落地任何產物
+                if !FileManager.default.fileExists(atPath: url.path) { break }
             }
         } else {
-            guard let img = UIImage(contentsOfFile: url.path) else { throw AppError("無法讀取影像進行 OCR") }
+            guard let img = UIImage(data: try Data(contentsOf: url)) else { throw AppError("無法讀取影像進行 OCR") }
             pageResults.append(try recognize(in: img, languages: languages))
+        }
+
+        // 落地前檢查：辨識期間來源被刪除 → 丟棄產物，不寫回已刪路徑
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            NSLog("[AirScan] OCR: source deleted during recognition; discarding output for \(url.lastPathComponent)")
+            let txtURL = url.deletingPathExtension().appendingPathExtension("txt")
+            try? FileManager.default.removeItem(at: txtURL)
+            return OCRDocumentResult(textFileURL: txtURL, fullText: "", textLayerWritten: false)
         }
 
         let fullText = pageResults.map(\.text).joined(separator: "\n\n")

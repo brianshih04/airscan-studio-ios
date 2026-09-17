@@ -101,6 +101,11 @@ final class ScannerBrowser: ObservableObject {
         )])
     }
 
+    /// 移除裝置（manual 裝置滑動刪除用，review #22）。
+    func removeScanner(id: String) {
+        scanners.removeAll { $0.id == id }
+    }
+
     func stop() {
         browsers.forEach { $0.cancel() }
         browsers = []
